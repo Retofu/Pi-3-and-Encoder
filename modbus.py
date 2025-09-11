@@ -3,7 +3,6 @@ import math
 import time
 import threading
 from pymodbus.server import StartTcpServer
-from pymodbus.device import ModbusDeviceIdentification
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
@@ -145,15 +144,6 @@ def run_modbus_server():
     context = ModbusServerContext(slaves=store, single=True)
     data_store = ModbusDataStore(context)
     
-    # Информация об устройстве
-    identity = ModbusDeviceIdentification()
-    identity.VendorName = 'Raspberry Pi Encoder'
-    identity.ProductCode = 'ENCODER'
-    identity.VendorUrl = 'https://github.com/your-repo'
-    identity.ProductName = 'Quadrature Encoder Reader'
-    identity.ModelName = 'Pi-3-Encoder'
-    identity.MajorMinorRevision = '1.0'
-    
     print(f"Запуск ModBus TCP сервера на порту {MODBUS_PORT}")
     print(f"Unit ID: {MODBUS_UNIT_ID}")
     print("Регистры:")
@@ -165,7 +155,7 @@ def run_modbus_server():
     
     # Запуск сервера в отдельном потоке
     def server_thread():
-        StartTcpServer(context, identity=identity, address=("0.0.0.0", MODBUS_PORT))
+        StartTcpServer(context, address=("0.0.0.0", MODBUS_PORT))
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
