@@ -149,11 +149,11 @@ class ModbusDataStore:
         builder.add_32bit_int(counter)
         counter_data = builder.to_registers()
         
-        # Обновление регистров (API pymodbus 3.11.2)
-        self.store['hr'].setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
-        self.store['hr'].setValues(REG_ANGLE_DEG, angle_deg_data)
-        self.store['hr'].setValues(REG_COUNTER, counter_data)
-        self.store['hr'].setValues(REG_PPR, [PPR])
+        # Обновление регистров (упрощенная API pymodbus 3.11.2)
+        self.store.setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
+        self.store.setValues(REG_ANGLE_DEG, angle_deg_data)
+        self.store.setValues(REG_COUNTER, counter_data)
+        self.store.setValues(REG_PPR, [PPR])
 
 def run_modbus_server():
     """Запуск ModBus TCP сервера"""
@@ -162,13 +162,8 @@ def run_modbus_server():
     initial_values = [0] * 100
     initial_values[REG_PPR] = PPR  # Устанавливаем PPR сразу
     
-    # Простое хранилище для pymodbus 3.11.2
-    store = {
-        'di': ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
-        'co': ModbusSequentialDataBlock(0, [0]*100),  # Coils
-        'hr': ModbusSequentialDataBlock(0, initial_values),  # Holding Registers
-        'ir': ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
-    }
+    # Создаем хранилище с правильной структурой для pymodbus 3.11.2
+    store = ModbusSequentialDataBlock(0, initial_values)  # Holding Registers
     
     data_store = ModbusDataStore(store)
     
