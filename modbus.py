@@ -48,7 +48,7 @@ angle_rad = 0.0
 angle_deg = 0.0
 
 # Настройка ModBus
-MODBUS_PORT = 1502  # Изменили с 502 на 1502 (не требует root)
+MODBUS_PORT = 2502  # Изменили на 2502 (порт 1502 занят)
 MODBUS_UNIT_ID = 1
 
 # Регистры ModBus (Holding Registers, адреса 0-99)
