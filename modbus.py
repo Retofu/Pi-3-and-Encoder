@@ -3,7 +3,7 @@ import math
 import time
 import threading
 from pymodbus.server import StartTcpServer
-from pymodbus.datastore import ModbusSequentialDataBlock
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
 
 class Endian:
     Big = 0
@@ -124,8 +124,8 @@ class EncoderReader:
 class ModbusDataStore:
     """Класс для обновления данных в ModBus регистрах"""
     
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, context):
+        self.context = context
         
     def update_registers(self):
         """Обновление регистров данными энкодера"""
@@ -149,27 +149,28 @@ class ModbusDataStore:
         builder.add_32bit_int(counter)
         counter_data = builder.to_registers()
         
-        # Обновление регистров (новая API pymodbus 3.x)
-        self.store['hr'].setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
-        self.store['hr'].setValues(REG_ANGLE_DEG, angle_deg_data)
-        self.store['hr'].setValues(REG_COUNTER, counter_data)
-        self.store['hr'].setValues(REG_PPR, [PPR])
+        # Обновление регистров (правильная API pymodbus 3.x)
+        self.context[0].setValues(3, REG_ANGLE_RAD, angle_rad_data)  # Holding registers
+        self.context[0].setValues(3, REG_ANGLE_DEG, angle_deg_data)
+        self.context[0].setValues(3, REG_COUNTER, counter_data)
+        self.context[0].setValues(3, REG_PPR, [PPR])
 
 def run_modbus_server():
     """Запуск ModBus TCP сервера"""
-    # Создание хранилища данных (новая API pymodbus 3.x)
+    # Создание хранилища данных (правильная API pymodbus 3.x)
     # Инициализируем регистры начальными значениями
     initial_values = [0] * 100
     initial_values[REG_PPR] = PPR  # Устанавливаем PPR сразу
     
-    store = {
-        'di': ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
-        'co': ModbusSequentialDataBlock(0, [0]*100),  # Coils
-        'hr': ModbusSequentialDataBlock(0, initial_values),  # Holding Registers
-        'ir': ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
-    }
+    store = ModbusSlaveContext(
+        di=ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
+        co=ModbusSequentialDataBlock(0, [0]*100),  # Coils
+        hr=ModbusSequentialDataBlock(0, initial_values),  # Holding Registers
+        ir=ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
+    )
     
-    data_store = ModbusDataStore(store)
+    context = ModbusServerContext(slaves=store, single=True)
+    data_store = ModbusDataStore(context)
     
     # Инициализируем регистры начальными данными
     data_store.update_registers()
@@ -184,7 +185,7 @@ def run_modbus_server():
     
     # Запуск сервера в отдельном потоке
     def server_thread():
-        StartTcpServer(store, address=("0.0.0.0", MODBUS_PORT))
+        StartTcpServer(context, address=("0.0.0.0", MODBUS_PORT))
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
