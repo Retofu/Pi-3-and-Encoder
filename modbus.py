@@ -3,7 +3,7 @@ import math
 import time
 import threading
 from pymodbus.server import StartTcpServer
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
+from pymodbus.datastore import ModbusSequentialDataBlock
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
@@ -99,8 +99,8 @@ class EncoderReader:
 class ModbusDataStore:
     """Класс для обновления данных в ModBus регистрах"""
     
-    def __init__(self, context):
-        self.context = context
+    def __init__(self, store):
+        self.store = store
         
     def update_registers(self):
         """Обновление регистров данными энкодера"""
@@ -124,25 +124,24 @@ class ModbusDataStore:
         builder.add_32bit_int(counter)
         counter_data = builder.to_registers()
         
-        # Обновление регистров
-        self.context[1].setValues(3, REG_ANGLE_RAD, angle_rad_data)  # Holding registers
-        self.context[1].setValues(3, REG_ANGLE_DEG, angle_deg_data)
-        self.context[1].setValues(3, REG_COUNTER, counter_data)
-        self.context[1].setValues(3, REG_STATUS, [status])
-        self.context[1].setValues(3, REG_PPR, [PPR])
+        # Обновление регистров (новая API pymodbus 3.x)
+        self.store['hr'].setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
+        self.store['hr'].setValues(REG_ANGLE_DEG, angle_deg_data)
+        self.store['hr'].setValues(REG_COUNTER, counter_data)
+        self.store['hr'].setValues(REG_STATUS, [status])
+        self.store['hr'].setValues(REG_PPR, [PPR])
 
 def run_modbus_server():
     """Запуск ModBus TCP сервера"""
-    # Создание хранилища данных
-    store = ModbusSlaveContext(
-        di=ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
-        co=ModbusSequentialDataBlock(0, [0]*100),  # Coils
-        hr=ModbusSequentialDataBlock(0, [0]*100),  # Holding Registers
-        ir=ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
-    )
+    # Создание хранилища данных (новая API pymodbus 3.x)
+    store = {
+        'di': ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
+        'co': ModbusSequentialDataBlock(0, [0]*100),  # Coils
+        'hr': ModbusSequentialDataBlock(0, [0]*100),  # Holding Registers
+        'ir': ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
+    }
     
-    context = ModbusServerContext(slaves=store, single=True)
-    data_store = ModbusDataStore(context)
+    data_store = ModbusDataStore(store)
     
     print(f"Запуск ModBus TCP сервера на порту {MODBUS_PORT}")
     print(f"Unit ID: {MODBUS_UNIT_ID}")
@@ -155,7 +154,7 @@ def run_modbus_server():
     
     # Запуск сервера в отдельном потоке
     def server_thread():
-        StartTcpServer(context, address=("0.0.0.0", MODBUS_PORT))
+        StartTcpServer(store, address=("0.0.0.0", MODBUS_PORT))
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
