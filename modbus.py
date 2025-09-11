@@ -177,7 +177,7 @@ def run_modbus_server():
     
     # Запуск сервера в отдельном потоке
     def server_thread():
-        StartTcpServer(store, address=("192.168.20.230", MODBUS_PORT))
+        StartTcpServer(store, address=("192.168.20.37", MODBUS_PORT))
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
