@@ -3,7 +3,7 @@ import math
 import time
 import threading
 from pymodbus.server import StartTcpServer
-from pymodbus.datastore import ModbusSequentialDataBlock
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
 
 class Endian:
     Big = 0
@@ -124,8 +124,9 @@ class EncoderReader:
 class ModbusDataStore:
     """Класс для обновления данных в ModBus регистрах"""
     
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, hr_block, ir_block):
+        self.hr_block = hr_block  # Holding Registers
+        self.ir_block = ir_block  # Input Registers
         
     def update_registers(self):
         """Обновление регистров данными энкодера"""
@@ -149,11 +150,17 @@ class ModbusDataStore:
         builder.add_32bit_int(counter)
         counter_data = builder.to_registers()
         
-        # Обновление регистров (упрощенная API pymodbus 3.11.2)
-        self.store.setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
-        self.store.setValues(REG_ANGLE_DEG, angle_deg_data)
-        self.store.setValues(REG_COUNTER, counter_data)
-        self.store.setValues(REG_PPR, [PPR])
+        # Обновление регистров в обоих блоках (Holding и Input)
+        self.hr_block.setValues(REG_ANGLE_RAD, angle_rad_data)
+        self.hr_block.setValues(REG_ANGLE_DEG, angle_deg_data)
+        self.hr_block.setValues(REG_COUNTER, counter_data)
+        self.hr_block.setValues(REG_PPR, [PPR])
+        
+        # Также обновляем Input Registers (для команды 04)
+        self.ir_block.setValues(REG_ANGLE_RAD, angle_rad_data)
+        self.ir_block.setValues(REG_ANGLE_DEG, angle_deg_data)
+        self.ir_block.setValues(REG_COUNTER, counter_data)
+        self.ir_block.setValues(REG_PPR, [PPR])
 
 def run_modbus_server():
     """Запуск ModBus TCP сервера"""
@@ -162,10 +169,24 @@ def run_modbus_server():
     initial_values = [0] * 100
     initial_values[REG_PPR] = PPR  # Устанавливаем PPR сразу
     
-    # Создаем хранилище с правильной структурой для pymodbus 3.11.2
-    store = ModbusSequentialDataBlock(0, initial_values)  # Holding Registers
+    # Создаем блоки данных для различных типов регистров
+    hr_block = ModbusSequentialDataBlock(0, initial_values)  # Holding Registers
+    ir_block = ModbusSequentialDataBlock(0, initial_values)  # Input Registers
+    di_block = ModbusSequentialDataBlock(0, [0] * 100)       # Discrete Inputs
+    co_block = ModbusSequentialDataBlock(0, [0] * 100)       # Coils
     
-    data_store = ModbusDataStore(store)
+    # Создаем контекст устройства (device context)
+    device_context = ModbusDeviceContext(
+        di=di_block,    # Discrete Inputs
+        co=co_block,    # Coils
+        hr=hr_block,    # Holding Registers
+        ir=ir_block     # Input Registers
+    )
+    
+    # Создаем контекст сервера с указанием Device ID
+    server_context = ModbusServerContext(devices={MODBUS_UNIT_ID: device_context}, single=False)
+    
+    data_store = ModbusDataStore(hr_block, ir_block)  # Передаем оба блока для обновления
     
     # Инициализируем регистры начальными данными
     data_store.update_registers()
@@ -178,13 +199,9 @@ def run_modbus_server():
     print(f"  {REG_COUNTER}-{REG_COUNTER+1}: Счетчик импульсов (int32)")
     print(f"  {REG_PPR}: PPR энкодера (uint16)")
     
-    # Запуск сервера в отдельном потоке (упрощенный API для pymodbus 3.11.2)
+    # Запуск сервера в отдельном потоке (правильный API для pymodbus 3.11.2)
     def server_thread():
-        StartTcpServer(
-            store, 
-            address=("0.0.0.0", MODBUS_PORT),
-            unit_id=MODBUS_UNIT_ID
-        )
+        StartTcpServer(server_context, address=("0.0.0.0", MODBUS_PORT))
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
