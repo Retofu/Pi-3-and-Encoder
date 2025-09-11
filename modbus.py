@@ -2,10 +2,61 @@ import pigpio
 import math
 import time
 import threading
-from pymodbus.server import StartTcpServer
-from pymodbus.datastore import ModbusSequentialDataBlock
-from pymodbus.payload import Endian
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
+# Проверим доступные модули в pymodbus 3.x
+try:
+    from pymodbus.server import StartTcpServer
+    from pymodbus.datastore import ModbusSequentialDataBlock
+    print("✓ Базовые импорты pymodbus работают")
+except ImportError as e:
+    print(f"Ошибка базовых импортов: {e}")
+    exit(1)
+
+# Попробуем разные варианты импорта Endian
+try:
+    from pymodbus.payload import Endian
+    print("✓ Endian из pymodbus.payload")
+except ImportError:
+    try:
+        from pymodbus.constants import Endian
+        print("✓ Endian из pymodbus.constants")
+    except ImportError:
+        try:
+            from pymodbus import Endian
+            print("✓ Endian из pymodbus")
+        except ImportError:
+            print("❌ Endian не найден, используем альтернативу")
+            # Альтернатива - определяем Endian вручную
+            class Endian:
+                Big = 0
+                Little = 1
+
+# Попробуем импорт BinaryPayloadBuilder
+try:
+    from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
+    print("✓ BinaryPayloadBuilder из pymodbus.payload")
+except ImportError:
+    try:
+        from pymodbus import BinaryPayloadBuilder, BinaryPayloadDecoder
+        print("✓ BinaryPayloadBuilder из pymodbus")
+    except ImportError:
+        print("❌ BinaryPayloadBuilder не найден")
+        # Простая альтернатива для упаковки данных
+        class BinaryPayloadBuilder:
+            def __init__(self, byteorder=0, wordorder=0):
+                self.data = []
+                self.byteorder = byteorder
+            def add_32bit_float(self, value):
+                import struct
+                packed = struct.pack('>f' if self.byteorder == 0 else '<f', value)
+                self.data.extend([int.from_bytes(packed[:2], 'big' if self.byteorder == 0 else 'little'),
+                                int.from_bytes(packed[2:], 'big' if self.byteorder == 0 else 'little')])
+            def add_32bit_int(self, value):
+                import struct
+                packed = struct.pack('>i' if self.byteorder == 0 else '<i', value)
+                self.data.extend([int.from_bytes(packed[:2], 'big' if self.byteorder == 0 else 'little'),
+                                int.from_bytes(packed[2:], 'big' if self.byteorder == 0 else 'little')])
+            def to_registers(self):
+                return self.data
 
 # Настройка пинов энкодера
 A_PIN = 17  # Фаза A (GPIO17, pin 11)
