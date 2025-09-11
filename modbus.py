@@ -4,7 +4,7 @@ import time
 import threading
 from pymodbus.server import StartTcpServer
 from pymodbus.datastore import ModbusSequentialDataBlock
-from pymodbus.constants import Endian
+from pymodbus.payload import Endian
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
 # Настройка пинов энкодера
