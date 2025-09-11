@@ -2,61 +2,38 @@ import pigpio
 import math
 import time
 import threading
-# Проверим доступные модули в pymodbus 3.x
-try:
-    from pymodbus.server import StartTcpServer
-    from pymodbus.datastore import ModbusSequentialDataBlock
-    print("✓ Базовые импорты pymodbus работают")
-except ImportError as e:
-    print(f"Ошибка базовых импортов: {e}")
-    exit(1)
+from pymodbus.server import StartTcpServer
+from pymodbus.datastore import ModbusSequentialDataBlock
 
-# Попробуем разные варианты импорта Endian
-try:
-    from pymodbus.payload import Endian
-    print("✓ Endian из pymodbus.payload")
-except ImportError:
-    try:
-        from pymodbus.constants import Endian
-        print("✓ Endian из pymodbus.constants")
-    except ImportError:
-        try:
-            from pymodbus import Endian
-            print("✓ Endian из pymodbus")
-        except ImportError:
-            print("❌ Endian не найден, используем альтернативу")
-            # Альтернатива - определяем Endian вручную
-            class Endian:
-                Big = 0
-                Little = 1
+class Endian:
+    Big = 0
+    Little = 1
 
-# Попробуем импорт BinaryPayloadBuilder
-try:
-    from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
-    print("✓ BinaryPayloadBuilder из pymodbus.payload")
-except ImportError:
-    try:
-        from pymodbus import BinaryPayloadBuilder, BinaryPayloadDecoder
-        print("✓ BinaryPayloadBuilder из pymodbus")
-    except ImportError:
-        print("❌ BinaryPayloadBuilder не найден")
-        # Простая альтернатива для упаковки данных
-        class BinaryPayloadBuilder:
-            def __init__(self, byteorder=0, wordorder=0):
-                self.data = []
-                self.byteorder = byteorder
-            def add_32bit_float(self, value):
-                import struct
-                packed = struct.pack('>f' if self.byteorder == 0 else '<f', value)
-                self.data.extend([int.from_bytes(packed[:2], 'big' if self.byteorder == 0 else 'little'),
-                                int.from_bytes(packed[2:], 'big' if self.byteorder == 0 else 'little')])
-            def add_32bit_int(self, value):
-                import struct
-                packed = struct.pack('>i' if self.byteorder == 0 else '<i', value)
-                self.data.extend([int.from_bytes(packed[:2], 'big' if self.byteorder == 0 else 'little'),
-                                int.from_bytes(packed[2:], 'big' if self.byteorder == 0 else 'little')])
-            def to_registers(self):
-                return self.data
+class BinaryPayloadBuilder:
+    def __init__(self, byteorder=0, wordorder=0):
+        self.data = []
+        self.byteorder = byteorder
+
+    def add_32bit_float(self, value):
+        import struct
+        # Упаковываем float32 в big-endian (стандарт ModBus)
+        packed = struct.pack('>f', value)
+        # Разбиваем на два 16-битных регистра
+        reg1 = int.from_bytes(packed[:2], 'big')
+        reg2 = int.from_bytes(packed[2:], 'big')
+        self.data.extend([reg1, reg2])
+
+    def add_32bit_int(self, value):
+        import struct
+        # Упаковываем int32 в big-endian (стандарт ModBus)
+        packed = struct.pack('>i', value)
+        # Разбиваем на два 16-битных регистра
+        reg1 = int.from_bytes(packed[:2], 'big')
+        reg2 = int.from_bytes(packed[2:], 'big')
+        self.data.extend([reg1, reg2])
+
+    def to_registers(self):
+        return self.data
 
 # Настройка пинов энкодера
 A_PIN = 17  # Фаза A (GPIO17, pin 11)
@@ -69,18 +46,16 @@ PPR = 1200  # Разрешение энкодера (импульсов на о�
 counter = 0
 angle_rad = 0.0
 angle_deg = 0.0
-status = 0  # 0=OK, 1=Error
 
 # Настройка ModBus
-MODBUS_PORT = 502
+MODBUS_PORT = 1502  # Изменили с 502 на 1502 (не требует root)
 MODBUS_UNIT_ID = 1
 
 # Регистры ModBus (Holding Registers, адреса 0-99)
 REG_ANGLE_RAD = 0      # Угол в радианах (float32, 2 регистра)
 REG_ANGLE_DEG = 2      # Угол в градусах (float32, 2 регистра) 
 REG_COUNTER = 4        # Счетчик импульсов (int32, 2 регистра)
-REG_STATUS = 6         # Статус (uint16, 1 регистр)
-REG_PPR = 7           # PPR энкодера (uint16, 1 регистр)
+REG_PPR = 6           # PPR энкодера (uint16, 1 регистр)
 
 class EncoderReader:
     def __init__(self):
@@ -115,7 +90,6 @@ class EncoderReader:
         self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
         
         self.running = True
-        status = 0  # OK
         print("Энкодер инициализирован")
         
     def stop(self):
@@ -155,7 +129,7 @@ class ModbusDataStore:
         
     def update_registers(self):
         """Обновление регистров данными энкодера"""
-        global counter, angle_rad, angle_deg, status, PPR
+        global counter, angle_rad, angle_deg, PPR
         
         # Расчет углов
         angle_rad = (counter % PPR) * (2 * math.pi / PPR)
@@ -179,7 +153,6 @@ class ModbusDataStore:
         self.store['hr'].setValues(REG_ANGLE_RAD, angle_rad_data)  # Holding registers
         self.store['hr'].setValues(REG_ANGLE_DEG, angle_deg_data)
         self.store['hr'].setValues(REG_COUNTER, counter_data)
-        self.store['hr'].setValues(REG_STATUS, [status])
         self.store['hr'].setValues(REG_PPR, [PPR])
 
 def run_modbus_server():
@@ -200,7 +173,6 @@ def run_modbus_server():
     print(f"  {REG_ANGLE_RAD}-{REG_ANGLE_RAD+1}: Угол в радианах (float32)")
     print(f"  {REG_ANGLE_DEG}-{REG_ANGLE_DEG+1}: Угол в градусах (float32)")
     print(f"  {REG_COUNTER}-{REG_COUNTER+1}: Счетчик импульсов (int32)")
-    print(f"  {REG_STATUS}: Статус (uint16)")
     print(f"  {REG_PPR}: PPR энкодера (uint16)")
     
     # Запуск сервера в отдельном потоке
@@ -214,7 +186,7 @@ def run_modbus_server():
 
 def main():
     """Основная функция"""
-    global counter, angle_rad, angle_deg, status
+    global counter, angle_rad, angle_deg
     
     print("=== Raspberry Pi 3 Encoder + ModBus TCP ===")
     
@@ -242,7 +214,7 @@ def main():
             data_store.update_registers()
             
             # Вывод в консоль
-            print(f"Угол: {angle_rad:.3f} рад ({angle_deg:.1f}°), Счетчик: {counter}, Статус: {status}")
+            print(f"Угол: {angle_rad:.3f} рад ({angle_deg:.1f}°), Счетчик: {counter}")
             
             time.sleep(0.1)  # Обновление каждые 100мс
             
