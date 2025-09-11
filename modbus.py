@@ -178,9 +178,13 @@ def run_modbus_server():
     print(f"  {REG_COUNTER}-{REG_COUNTER+1}: Счетчик импульсов (int32)")
     print(f"  {REG_PPR}: PPR энкодера (uint16)")
     
-    # Запуск сервера в отдельном потоке
+    # Запуск сервера в отдельном потоке (упрощенный API для pymodbus 3.11.2)
     def server_thread():
-        StartTcpServer(store, address=("0.0.0.0", MODBUS_PORT))
+        StartTcpServer(
+            store, 
+            address=("0.0.0.0", MODBUS_PORT),
+            unit_id=MODBUS_UNIT_ID
+        )
     
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
