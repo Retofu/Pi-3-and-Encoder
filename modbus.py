@@ -158,14 +158,21 @@ class ModbusDataStore:
 def run_modbus_server():
     """Запуск ModBus TCP сервера"""
     # Создание хранилища данных (новая API pymodbus 3.x)
+    # Инициализируем регистры начальными значениями
+    initial_values = [0] * 100
+    initial_values[REG_PPR] = PPR  # Устанавливаем PPR сразу
+    
     store = {
         'di': ModbusSequentialDataBlock(0, [0]*100),  # Discrete Inputs
         'co': ModbusSequentialDataBlock(0, [0]*100),  # Coils
-        'hr': ModbusSequentialDataBlock(0, [0]*100),  # Holding Registers
+        'hr': ModbusSequentialDataBlock(0, initial_values),  # Holding Registers
         'ir': ModbusSequentialDataBlock(0, [0]*100)   # Input Registers
     }
     
     data_store = ModbusDataStore(store)
+    
+    # Инициализируем регистры начальными данными
+    data_store.update_registers()
     
     print(f"Запуск ModBus TCP сервера на порту {MODBUS_PORT}")
     print(f"Unit ID: {MODBUS_UNIT_ID}")
