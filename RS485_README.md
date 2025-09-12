@@ -57,7 +57,8 @@ python rs.py
 
 **Для работы с GPIO пинами (логический анализатор):**
 ```bash
-python rs_gpio.py
+python rs_gpio.py           # С выводом в консоль
+python rs_gpio_silent.py    # Без вывода (максимальная скорость)
 ```
 
 **Для тестирования RS-485 через GPIO:**

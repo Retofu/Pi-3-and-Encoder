@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RS-485 передача через GPIO пины для логического анализатора
+RS-485 передача через GPIO пины - версия без вывода в консоль для максимальной производительности
 """
 
 import pigpio
@@ -50,23 +50,16 @@ class EncoderReader:
         self.pi.set_mode(Z_PIN, pigpio.INPUT)
         self.pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
         
-        # Фильтр дребезга
-        self.pi.set_glitch_filter(A_PIN, 200)
-        self.pi.set_glitch_filter(B_PIN, 200)
-        self.pi.set_glitch_filter(Z_PIN, 200)
-        
-        # Диагностика состояния пинов
-        print("Диагностика энкодера:")
-        print(f"  Пин A (GPIO{A_PIN}): {self.pi.read(A_PIN)}")
-        print(f"  Пин B (GPIO{B_PIN}): {self.pi.read(B_PIN)}")
-        print(f"  Пин Z (GPIO{Z_PIN}): {self.pi.read(Z_PIN)}")
+        # Минимальный фильтр дребезга
+        self.pi.set_glitch_filter(A_PIN, 50)
+        self.pi.set_glitch_filter(B_PIN, 50)
+        self.pi.set_glitch_filter(Z_PIN, 50)
         
         # Обработчики прерываний
         self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
         self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
         
         self.running = True
-        print("Энкодер инициализирован")
         
     def stop(self):
         """Остановка чтения энкодера"""
@@ -77,7 +70,6 @@ class EncoderReader:
             self.cb_z.cancel()
         if self.pi:
             self.pi.stop()
-        print("Энкодер остановлен")
         
     def _handle_A(self, gpio, level, tick):
         """Обработчик фазы A"""
@@ -99,8 +91,8 @@ class EncoderReader:
                     counter += 1
                 else:
                     counter -= 1
-        except Exception as e:
-            print(f"Ошибка в обработчике A: {e}")
+        except:
+            pass
             
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
@@ -134,11 +126,8 @@ class RS485Transmitter:
             self.pi.write(RS485_DE_PIN, 0)  # Отключить передачу (DE=0)
             
             self.running = True
-            print(f"RS-485 инициализирован через GPIO: TX={RS485_TX_PIN}, RX={RS485_RX_PIN}, DE={RS485_DE_PIN}")
-            print(f"Скорость: {self.baudrate} bps, Задержка бита: {self.bit_delay*1000:.2f} мс")
             
         except Exception as e:
-            print(f"Ошибка инициализации RS-485 GPIO: {e}")
             raise
     
     def stop(self):
@@ -149,7 +138,6 @@ class RS485Transmitter:
             self.pi.write(RS485_DE_PIN, 0)
             self.pi.write(RS485_TX_PIN, 1)
             self.pi.stop()
-        print("RS-485 остановлен")
     
     def send_byte(self, byte_value):
         """Отправка одного байта через RS-485"""
@@ -172,8 +160,7 @@ class RS485Transmitter:
             time.sleep(self.bit_delay)
             
             return True
-        except Exception as e:
-            print(f"Ошибка отправки байта: {e}")
+        except:
             return False
     
     def create_data_packet(self, angle_rad):
@@ -228,7 +215,7 @@ class RS485Transmitter:
         try:
             # Включаем передачу
             self.pi.write(RS485_DE_PIN, 1)
-            time.sleep(0.001)  # Небольшая задержка для стабилизации
+            time.sleep(0.00005)  # Минимальная задержка (50 мкс)
             
             # Отправляем каждый байт
             for byte_value in packet:
@@ -239,8 +226,7 @@ class RS485Transmitter:
             self.pi.write(RS485_DE_PIN, 0)
             return True
             
-        except Exception as e:
-            print(f"Ошибка отправки пакета: {e}")
+        except:
             return False
 
 def update_angle():
@@ -258,11 +244,9 @@ def main():
     """Основная функция"""
     global counter, angle_rad
     
-    print("=== Raspberry Pi 3 Encoder + RS-485 GPIO Transmitter ===")
-    print("Подключение к логическому анализатору:")
-    print(f"  TX = GPIO{RS485_TX_PIN} (pin 8)")
-    print(f"  RX = GPIO{RS485_RX_PIN} (pin 10)")
-    print(f"  DE = GPIO{RS485_DE_PIN} (pin 16)")
+    print("=== RS-485 Silent Mode - Максимальная производительность ===")
+    print("Версия без вывода в консоль для достижения максимальной скорости")
+    print("Нажмите Ctrl+C для остановки")
     
     # Инициализация энкодера
     encoder = EncoderReader()
@@ -277,15 +261,16 @@ def main():
     rs485 = RS485Transmitter()
     try:
         rs485.start()
+        print("✓ RS-485 инициализирован")
     except Exception as e:
         print(f"Ошибка инициализации RS-485: {e}")
         encoder.stop()
         return
     
-    print("Система запущена. Передача данных: 2.75 мс передача + 0.25 мс пауза = 3 мс цикл")
-    print("Нажмите Ctrl+C для остановки")
+    print("Система запущена. Передача данных каждые 3 мс (без вывода в консоль)")
     
     packet_count = 0
+    start_time_total = time.time()
     
     try:
         while True:
@@ -295,31 +280,24 @@ def main():
             # Создание пакета данных
             packet = rs485.create_data_packet(angle_rad)
             
-            # Измеряем время начала передачи
-            start_time = time.time()
-            
-            # Отправка пакета
+            # Отправка пакета (без измерения времени для максимальной скорости)
             if rs485.send_packet(packet):
                 packet_count += 1
                 
-                # Вычисляем время передачи
-                transmission_time = (time.time() - start_time) * 1000  # в мс
-                
-                # Вывод информации только каждые 100 пакетов для мониторинга
-                if packet_count % 100 == 0:
-                    print(f"Пакет #{packet_count}: Время передачи={transmission_time:.2f} мс, Счетчик={counter}")
+                # Вывод статистики только каждые 10000 пакетов
+                if packet_count % 10000 == 0:
+                    elapsed_time = time.time() - start_time_total
+                    packets_per_second = packet_count / elapsed_time
+                    print(f"Пакетов отправлено: {packet_count}, Скорость: {packets_per_second:.1f} пакетов/сек")
             else:
                 print("Ошибка отправки пакета")
-            
-            # Дополнительная диагностика каждые 10000 пакетов
-            if packet_count % 10000 == 0:
-                print(f"Диагностика: Пакетов={packet_count}, Счетчик={counter}, Угол={angle_rad:.3f} рад")
+                break
             
             # Пауза между пакетами (0.25 мс)
             time.sleep(0.00025)
             
     except KeyboardInterrupt:
-        print("\nОстановка...")
+        print(f"\nОстановка... Отправлено пакетов: {packet_count}")
     finally:
         rs485.stop()
         encoder.stop()
