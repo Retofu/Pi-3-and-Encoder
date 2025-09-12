@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-RS-485 передача через прямой доступ к UART - МАКСИМАЛЬНАЯ СКОРОСТЬ
-Обход pyserial для минимальных задержек
+RS-485 передача через аппаратный UART с аппаратным таймером pigpio
+Использует аппаратный таймер Raspberry Pi для точного контроля времени
 """
 
 import pigpio
 import math
 import time
 import struct
+import serial
 import os
-import fcntl
-import termios
 
 # Настройка пинов энкодера
 A_PIN = 17
@@ -26,6 +25,8 @@ UART_BAUDRATE = 507000
 
 # Глобальные переменные
 counter = 0
+packet_count = 0
+start_time = 0
 
 # Предварительно вычисленные константы
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
@@ -89,11 +90,11 @@ class EncoderReader:
         if level == 1 and self.running:
             counter = 0
 
-class DirectUART:
+class RS485Transmitter:
     def __init__(self, device=UART_DEVICE, baudrate=UART_BAUDRATE):
         self.device = device
         self.baudrate = baudrate
-        self.fd = None
+        self.serial_port = None
         self.pi = None
         self.running = False
         
@@ -122,44 +123,25 @@ class DirectUART:
         
     def start(self):
         try:
-            # Открываем UART напрямую
-            self.fd = os.open(self.device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-            
-            # Настраиваем UART
-            tty = termios.tcgetattr(self.fd)
-            
-            # Устанавливаем скорость (используем ближайшую доступную)
-            if self.baudrate >= 500000:
-                speed = termios.B500000
-            elif self.baudrate >= 460800:
-                speed = termios.B460800
-            elif self.baudrate >= 230400:
-                speed = termios.B230400
-            elif self.baudrate >= 115200:
-                speed = termios.B115200
-            else:
-                speed = termios.B115200
-                
-            termios.cfsetispeed(tty, speed)
-            termios.cfsetospeed(tty, speed)
-            
-            # Настраиваем параметры
-            tty[2] = termios.CS8 | termios.CLOCAL | termios.CREAD
-            tty[3] = 0
-            tty[4] = 0
-            tty[5] = 0
-            tty[6][termios.VMIN] = 0
-            tty[6][termios.VTIME] = 0
-            
-            termios.tcsetattr(self.fd, termios.TCSANOW, tty)
-            
-            # Инициализация pigpio для DE пина
             self.pi = pigpio.pi()
             if not self.pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
             
             self.pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
             self.pi.write(RS485_DE_PIN, 0)
+            
+            self.serial_port = serial.Serial(
+                port=self.device,
+                baudrate=self.baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.001,
+                write_timeout=0.001
+            )
+            
+            self.serial_port.reset_input_buffer()
+            self.serial_port.reset_output_buffer()
             
             self.running = True
             
@@ -171,11 +153,11 @@ class DirectUART:
         if self.pi:
             self.pi.write(RS485_DE_PIN, 0)
             self.pi.stop()
-        if self.fd:
-            os.close(self.fd)
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
     
     def send_packet(self, counter_value):
-        """Отправка пакета через прямой доступ к UART"""
+        """Отправка пакета"""
         if not self.running:
             return False
         
@@ -186,8 +168,9 @@ class DirectUART:
             # Включаем передачу
             self.pi.write(RS485_DE_PIN, 1)
             
-            # Отправляем пакет напрямую
-            os.write(self.fd, packet)
+            # Отправляем пакет
+            self.serial_port.write(packet)
+            self.serial_port.flush()
             
             # Отключаем передачу
             self.pi.write(RS485_DE_PIN, 0)
@@ -196,8 +179,24 @@ class DirectUART:
         except:
             return False
 
+def timer_callback(gpio, level, tick):
+    """Обработчик аппаратного таймера - вызывается каждые 3 мс"""
+    global counter, packet_count, start_time
+    
+    if packet_count == 0:
+        start_time = time.time()
+    
+    # Отправляем пакет
+    if rs485.send_packet(counter):
+        packet_count += 1
+        
+        # Статистика каждые 1000 пакетов (без вывода)
+        if packet_count % 1000 == 0:
+            elapsed = time.time() - start_time
+            rate = packet_count / elapsed
+
 def main():
-    global counter
+    global counter, rs485
     
     # Устанавливаем высокий приоритет процессу
     try:
@@ -212,23 +211,46 @@ def main():
     except Exception as e:
         return
     
-    # Инициализация прямого UART
-    uart = DirectUART()
+    # Инициализация RS-485
+    rs485 = RS485Transmitter()
     try:
-        uart.start()
+        rs485.start()
     except Exception as e:
         encoder.stop()
         return
     
+    # Настраиваем аппаратный таймер на 3 мс (3000 мкс)
+    # Используем GPIO 18 для таймера (не подключен к энкодеру)
+    timer_pin = 18
+    rs485.pi.set_mode(timer_pin, pigpio.OUTPUT)
+    
+    # Создаем аппаратный таймер
+    rs485.pi.wave_clear()
+    rs485.pi.wave_add_generic([
+        pigpio.pulse(1<<timer_pin, 0, 3000),  # 3 мс высокий уровень
+        pigpio.pulse(0, 1<<timer_pin, 0)      # Мгновенный низкий уровень
+    ])
+    wave_id = rs485.pi.wave_create()
+    
+    # Настраиваем callback для таймера
+    timer_cb = rs485.pi.callback(timer_pin, pigpio.RISING_EDGE, timer_callback)
+    
     try:
+        # Запускаем аппаратный таймер
+        rs485.pi.wave_send_repeat(wave_id)
+        
+        # Основной цикл
         while True:
-            # Отправляем пакет напрямую по счетчику
-            uart.send_packet(counter)
+            time.sleep(0.1)  # Небольшая пауза для снижения нагрузки
             
     except KeyboardInterrupt:
         pass
     finally:
-        uart.stop()
+        # Останавливаем таймер
+        rs485.pi.wave_tx_stop()
+        rs485.pi.wave_clear()
+        timer_cb.cancel()
+        rs485.stop()
         encoder.stop()
 
 if __name__ == "__main__":

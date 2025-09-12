@@ -183,7 +183,7 @@ class RS485Transmitter:
 
 def timer_callback():
     """Обработчик таймера - вызывается каждые 3 мс"""
-    global counter, packet_count, start_time
+    global counter, packet_count, start_time, timer
     
     if packet_count == 0:
         start_time = time.time()
@@ -192,11 +192,16 @@ def timer_callback():
     if rs485.send_packet(counter):
         packet_count += 1
         
-        # Статистика каждые 1000 пакетов
+        # Статистика каждые 1000 пакетов (без вывода)
         if packet_count % 1000 == 0:
             elapsed = time.time() - start_time
             rate = packet_count / elapsed
-            print(f"Пакетов: {packet_count}, Скорость: {rate:.1f} пакетов/сек, Счетчик: {counter}")
+    
+    # Перезапускаем таймер
+    if rs485.running:
+        timer = threading.Timer(0.003, timer_callback)
+        timer.daemon = True
+        timer.start()
 
 def main():
     global counter, rs485

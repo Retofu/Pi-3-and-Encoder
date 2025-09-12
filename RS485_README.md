@@ -65,7 +65,9 @@ python rs_uart_gpio_ultra.py # Аппаратный UART (ультра-быст�
 python rs_uart_gpio_extreme.py # Аппаратный UART (экстремально быстрый)
 python rs_uart_gpio_minimal.py # Аппаратный UART (минимальная версия)
 python rs_uart_direct.py       # Прямой доступ к UART (обход pyserial)
-python rs_uart_timer.py        # UART с аппаратным таймером (РЕКОМЕНДУЕТСЯ)
+python rs_uart_timer.py        # UART с программным таймером
+python rs_uart_hardware_timer.py # UART с аппаратным таймером pigpio
+python rs_uart_busy_wait.py    # UART с busy-waiting (РЕКОМЕНДУЕТСЯ)
 ```
 
 **Для тестирования RS-485 через GPIO:**
@@ -170,7 +172,11 @@ python test_encoder.py
 
 3. **Запустите скрипт:**
    ```bash
-   python3 rs_uart_timer.py         # Рекомендуется - с аппаратным таймером
+   python3 rs_uart_busy_wait.py     # Рекомендуется - с busy-waiting
+   # или
+   python3 rs_uart_hardware_timer.py # Аппаратный таймер pigpio
+   # или
+   python3 rs_uart_timer.py         # Программный таймер
    # или
    python3 rs_uart_direct.py        # Прямой доступ к UART
    # или
