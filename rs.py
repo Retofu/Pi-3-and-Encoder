@@ -97,29 +97,6 @@ class RS485Transmitter:
         self.pi = None
         self.running = False
         
-        # Предварительно создаем все возможные пакеты
-        self.packets = []
-        self._create_all_packets()
-        
-    def _create_all_packets(self):
-        """Создаем все возможные пакеты заранее"""
-        for i in range(PPR):
-            packet = bytearray(120)
-            packet[0] = 0x65
-            packet[118] = 0x45
-            packet[119] = 0xCF
-            
-            # Упаковываем угол
-            angle = i * ANGLE_MULTIPLIER
-            angle_bytes = struct.pack('<f', angle)
-            packet[55:59] = angle_bytes
-            
-            # Контрольная сумма
-            checksum = 0x65 + sum(angle_bytes)
-            packet[117] = 0xFF - (0xFF & checksum)
-            
-            self.packets.append(packet)
-        
     def start(self):
         try:
             self.pi = pigpio.pi()
@@ -161,8 +138,20 @@ class RS485Transmitter:
             return False
         
         try:
-            # Получаем предварительно созданный пакет
-            packet = self.packets[counter_value % PPR]
+            # Создаем пакет динамически для точного угла
+            packet = bytearray(120)
+            packet[0] = 0x65
+            packet[118] = 0x45
+            packet[119] = 0xCF
+            
+            # Вычисляем точный угол на основе счетчика
+            angle = counter_value * ANGLE_MULTIPLIER
+            angle_bytes = struct.pack('<f', angle)
+            packet[55:59] = angle_bytes
+            
+            # Контрольная сумма
+            checksum = 0x65 + sum(angle_bytes)
+            packet[117] = 0xFF - (0xFF & checksum)
             
             # Включаем передачу
             self.pi.write(RS485_DE_PIN, 1)
