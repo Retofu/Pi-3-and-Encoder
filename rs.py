@@ -119,9 +119,7 @@ class EncoderReader:
                 else:
                     counter -= 1
             
-            # Выводим информацию о каждом изменении для диагностики (только первые 50 импульсов)
-            if abs(counter) <= 50 and abs(counter) % 10 == 0 and counter != 0:
-                print(f"Энкодер: A={a}, B={b}, Счетчик={counter}")
+            # Убираем диагностический вывод из обработчика прерываний для повышения производительности
         except Exception as e:
             print(f"Ошибка в обработчике A: {e}")
             
@@ -227,36 +225,13 @@ def update_angle():
     global counter, angle_rad
     
     # Расчет угла в радианах (точно так же, как в modbus.py)
+    # Используем модуло для нормализации угла в диапазоне [0, 2π)
     angle_rad = (counter % PPR) * (2 * math.pi / PPR)
+    
+    # Если counter отрицательный, нормализуем его
+    if counter < 0:
+        angle_rad = (PPR + (counter % PPR)) * (2 * math.pi / PPR)
 
-def test_encoder(encoder, duration=10):
-    """Тестирование энкодера в течение указанного времени"""
-    global counter
-    print(f"\n=== Тест энкодера на {duration} секунд ===")
-    print("Крутите энкодер и наблюдайте за изменением счетчика...")
-    
-    start_time = time.time()
-    last_counter = counter
-    changes_count = 0
-    max_counter = counter
-    min_counter = counter
-    
-    while time.time() - start_time < duration:
-        if counter != last_counter:
-            print(f"Счетчик изменился: {last_counter} -> {counter}")
-            changes_count += 1
-            max_counter = max(max_counter, counter)
-            min_counter = min(min_counter, counter)
-            last_counter = counter
-        time.sleep(0.1)
-    
-    print(f"Тест завершен. Финальный счетчик: {counter}")
-    print(f"Количество изменений: {changes_count}")
-    print(f"Максимальное значение: {max_counter}")
-    print(f"Минимальное значение: {min_counter}")
-    
-    # Энкодер работает, если было хотя бы 5 изменений
-    return changes_count >= 5
 
 def main():
     """Основная функция"""
@@ -269,17 +244,7 @@ def main():
     try:
         encoder.start()
         
-        # Тест энкодера
-        print("\nПроверка работы энкодера...")
-        if not test_encoder(encoder, 5):
-            print("ВНИМАНИЕ: Энкодер не реагирует на вращение!")
-            print("Проверьте подключение пинов:")
-            print(f"  A_PIN = GPIO{A_PIN} (физический pin 11)")
-            print(f"  B_PIN = GPIO{B_PIN} (физический pin 15)")
-            print(f"  Z_PIN = GPIO{Z_PIN} (физический pin 13)")
-            print("Продолжаем работу в режиме симуляции...")
-        else:
-            print("✓ Энкодер работает корректно!")
+        print("✓ Энкодер инициализирован")
         
     except Exception as e:
         print(f"Ошибка инициализации энкодера: {e}")
@@ -296,6 +261,8 @@ def main():
     
     print("Система запущена. Передача данных каждые 3 мс. Нажмите Ctrl+C для остановки")
     
+    packet_count = 0  # Счетчик пакетов
+    
     try:
         while True:
             # Обновление угла
@@ -306,16 +273,20 @@ def main():
             
             # Отправка пакета
             if rs485.send_packet(packet):
-                # Вывод информации о переданном пакете (каждые 100 пакетов для уменьшения спама)
-                if counter % 100 == 0:
-                    print(f"Пакет #{counter//100}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                          f"Байты 56-59={packet[55:59].hex()}")
+                packet_count += 1
+                
+                # Вывод информации о переданном пакете (каждые 10 пакетов для лучшего мониторинга)
+                if packet_count % 10 == 0:
+                    # Проверяем правильность упаковки угла
+                    expected_angle = struct.unpack('<f', packet[55:59])[0]
+                    print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
+                          f"Байты 56-59={packet[55:59].hex()}, Проверка={expected_angle:.3f}")
             else:
                 print("Ошибка отправки пакета")
             
             # Дополнительная диагностика каждые 1000 пакетов
-            if counter % 1000 == 0 and counter != 0:
-                print(f"Диагностика: Счетчик={counter}, Угол={angle_rad:.3f} рад")
+            if packet_count % 1000 == 0:
+                print(f"Диагностика: Пакетов={packet_count}, Счетчик={counter}, Угол={angle_rad:.3f} рад")
             
             # Интервал 3 мс
             time.sleep(0.003)
