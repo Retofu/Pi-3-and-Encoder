@@ -119,8 +119,8 @@ class EncoderReader:
                 else:
                     counter -= 1
             
-            # Выводим информацию о каждом изменении для диагностики
-            if abs(counter) % 10 == 0 and counter != 0:  # Каждые 10 импульсов
+            # Выводим информацию о каждом изменении для диагностики (только первые 50 импульсов)
+            if abs(counter) <= 50 and abs(counter) % 10 == 0 and counter != 0:
                 print(f"Энкодер: A={a}, B={b}, Счетчик={counter}")
         except Exception as e:
             print(f"Ошибка в обработчике A: {e}")
@@ -237,15 +237,26 @@ def test_encoder(encoder, duration=10):
     
     start_time = time.time()
     last_counter = counter
+    changes_count = 0
+    max_counter = counter
+    min_counter = counter
     
     while time.time() - start_time < duration:
         if counter != last_counter:
             print(f"Счетчик изменился: {last_counter} -> {counter}")
+            changes_count += 1
+            max_counter = max(max_counter, counter)
+            min_counter = min(min_counter, counter)
             last_counter = counter
         time.sleep(0.1)
     
     print(f"Тест завершен. Финальный счетчик: {counter}")
-    return counter != 0
+    print(f"Количество изменений: {changes_count}")
+    print(f"Максимальное значение: {max_counter}")
+    print(f"Минимальное значение: {min_counter}")
+    
+    # Энкодер работает, если было хотя бы 5 изменений
+    return changes_count >= 5
 
 def main():
     """Основная функция"""
@@ -267,6 +278,8 @@ def main():
             print(f"  B_PIN = GPIO{B_PIN} (физический pin 15)")
             print(f"  Z_PIN = GPIO{Z_PIN} (физический pin 13)")
             print("Продолжаем работу в режиме симуляции...")
+        else:
+            print("✓ Энкодер работает корректно!")
         
     except Exception as e:
         print(f"Ошибка инициализации энкодера: {e}")

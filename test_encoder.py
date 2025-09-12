@@ -81,11 +81,28 @@ def main():
     print("\nКрутите энкодер и наблюдайте за изменением счетчика...")
     print("Нажмите Ctrl+C для остановки")
     
+    changes_count = 0
+    max_counter = counter
+    min_counter = counter
+    last_counter = counter
+    
     try:
         while True:
+            if counter != last_counter:
+                changes_count += 1
+                max_counter = max(max_counter, counter)
+                min_counter = min(min_counter, counter)
+                last_counter = counter
             time.sleep(0.1)
     except KeyboardInterrupt:
         print(f"\nФинальный счетчик: {counter}")
+        print(f"Количество изменений: {changes_count}")
+        print(f"Максимальное значение: {max_counter}")
+        print(f"Минимальное значение: {min_counter}")
+        if changes_count >= 5:
+            print("✓ Энкодер работает корректно!")
+        else:
+            print("✗ Энкодер не реагирует на вращение")
     finally:
         cb_a.cancel()
         pi.stop()
