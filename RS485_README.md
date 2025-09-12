@@ -57,8 +57,9 @@ python rs.py
 
 **Для работы с GPIO пинами (логический анализатор):**
 ```bash
-python rs_gpio.py           # С выводом в консоль
-python rs_gpio_silent.py    # Без вывода (максимальная скорость)
+python rs_gpio.py           # Программная передача через GPIO
+python rs_gpio_silent.py    # Программная передача (без вывода)
+python rs_uart_gpio.py      # Аппаратный UART на GPIO14/15 (РЕКОМЕНДУЕТСЯ)
 ```
 
 **Для тестирования RS-485 через GPIO:**
@@ -143,3 +144,29 @@ python test_encoder.py
    sudo systemctl start pigpiod
    sudo systemctl enable pigpiod
    ```
+
+### Настройка аппаратного UART на GPIO14/15 (РЕКОМЕНДУЕТСЯ)
+Для достижения точного времени передачи 2.75 мс:
+
+1. **Настройте UART в /boot/config.txt:**
+   ```bash
+   sudo nano /boot/config.txt
+   # Добавьте строки:
+   enable_uart=1
+   dtoverlay=uart0,txd0_pin=14,rxd0_pin=15
+   dtoverlay=disable-bt
+   ```
+
+2. **Перезагрузите систему:**
+   ```bash
+   sudo reboot
+   ```
+
+3. **Запустите скрипт:**
+   ```bash
+   python3 rs_uart_gpio.py
+   ```
+
+**Подробная инструкция:** см. файл `setup_uart_gpio.md`
+
+**Примечание:** Аппаратный UART обеспечивает точное время передачи без задержек программной реализации.
