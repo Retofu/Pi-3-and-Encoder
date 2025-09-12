@@ -169,7 +169,7 @@ class RS485Transmitter:
             
             # Отправляем пакет
             self.serial_port.write(packet)
-            self.serial_port.flush()
+            time.sleep(0.00025)
             
             # Отключаем передачу
             self.pi.write(RS485_DE_PIN, 0)
