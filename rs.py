@@ -4,6 +4,8 @@ import time
 import threading
 import serial
 import struct
+import glob
+import os
 
 # Настройка пинов энкодера (из modbus.py)
 A_PIN = 17  # Фаза A (GPIO17, pin 11)
@@ -13,9 +15,29 @@ Z_PIN = 27  # Фаза Z (GPIO27, pin 13)
 PPR = 1200  # Разрешение энкодера (импульсов на оборот)
 
 # Настройки RS-485
-RS485_DEVICE = '/dev/ttyUSB0'  # Путь к устройству RS-485
 RS485_BAUDRATE = 9600
 RS485_TIMEOUT = 0.1
+
+def find_serial_ports():
+    """Поиск доступных последовательных портов"""
+    ports = []
+    
+    # Поиск USB-адаптеров
+    usb_ports = glob.glob('/dev/ttyUSB*')
+    ports.extend(usb_ports)
+    
+    # Поиск ACM портов (USB CDC)
+    acm_ports = glob.glob('/dev/ttyACM*')
+    ports.extend(acm_ports)
+    
+    # Поиск других последовательных портов
+    other_ports = glob.glob('/dev/ttyS*')
+    ports.extend(other_ports)
+    
+    # Фильтруем только существующие порты
+    existing_ports = [port for port in ports if os.path.exists(port)]
+    
+    return sorted(existing_ports)
 
 # Глобальные переменные для данных энкодера
 counter = 0
@@ -90,7 +112,7 @@ class EncoderReader:
 class RS485Transmitter:
     """Класс для передачи данных через RS-485"""
     
-    def __init__(self, device=RS485_DEVICE, baudrate=RS485_BAUDRATE):
+    def __init__(self, device=None, baudrate=RS485_BAUDRATE):
         self.device = device
         self.baudrate = baudrate
         self.serial_port = None
@@ -98,6 +120,23 @@ class RS485Transmitter:
         
     def start(self):
         """Инициализация RS-485 интерфейса"""
+        # Если устройство не указано, ищем доступные порты
+        if self.device is None:
+            available_ports = find_serial_ports()
+            if not available_ports:
+                print("ВНИМАНИЕ: Не найдено доступных последовательных портов")
+                print("Переходим в режим симуляции (данные только в консоль)")
+                self.running = True
+                return
+            
+            print("Доступные последовательные порты:")
+            for i, port in enumerate(available_ports):
+                print(f"  {i}: {port}")
+            
+            # Пробуем подключиться к первому найденному порту
+            self.device = available_ports[0]
+            print(f"Используем порт: {self.device}")
+        
         try:
             self.serial_port = serial.Serial(
                 port=self.device,
@@ -110,7 +149,9 @@ class RS485Transmitter:
             self.running = True
             print(f"RS-485 инициализирован: {self.device}, {self.baudrate} bps")
         except Exception as e:
-            raise RuntimeError(f"Ошибка инициализации RS-485: {e}")
+            print(f"Ошибка подключения к {self.device}: {e}")
+            print("Переходим в режим симуляции (данные только в консоль)")
+            self.running = True
     
     def stop(self):
         """Остановка RS-485 интерфейса"""
@@ -144,8 +185,12 @@ class RS485Transmitter:
     
     def send_packet(self, packet):
         """Отправка пакета данных через RS-485"""
-        if not self.running or not self.serial_port or not self.serial_port.is_open:
+        if not self.running:
             return False
+            
+        # Если нет подключения к порту, работаем в режиме симуляции
+        if not self.serial_port or not self.serial_port.is_open:
+            return True  # Возвращаем True для симуляции
         
         try:
             self.serial_port.write(packet)
@@ -197,9 +242,10 @@ def main():
             
             # Отправка пакета
             if rs485.send_packet(packet):
-                # Вывод информации о переданном пакете
-                print(f"Отправлен пакет: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                      f"Байты 56-59={packet[55:59].hex()}")
+                # Вывод информации о переданном пакете (каждые 100 пакетов для уменьшения спама)
+                if counter % 100 == 0:
+                    print(f"Пакет #{counter//100}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
+                          f"Байты 56-59={packet[55:59].hex()}")
             else:
                 print("Ошибка отправки пакета")
             
