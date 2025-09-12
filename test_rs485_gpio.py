@@ -10,7 +10,7 @@ import time
 RS485_TX_PIN = 14  # GPIO14 (pin 8) - передача данных
 RS485_DE_PIN = 23  # GPIO23 (pin 16) - управление направлением (DE/RE)
 
-RS485_BAUDRATE = 9600
+RS485_BAUDRATE = 50000
 
 def send_test_byte(pi, byte_value):
     """Отправка одного байта через RS-485"""
