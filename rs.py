@@ -182,24 +182,45 @@ class RS485Transmitter:
     
     def create_data_packet(self, angle_rad):
         """
-        Создание пакета данных размером 116 байт
+        Создание пакета данных размером 120 байт
+        Байт 0: 0x65
         Байты 1-55 и 60-116: 0
         Байты 56-59: угол в радианах (float32, little-endian)
+        Байт 117: контрольная сумма CS = 0xFF - (0xFF & Σᵢ СДᵢ)
+        Байт 118: 0x45
+        Байт 119: 0xCF
         """
-        packet = bytearray(116)
+        packet = bytearray(120)
         
-        # Байты 1-55: заполняем нулями (индексы 0-54)
-        for i in range(55):
+        # Байт 0: 0x65
+        packet[0] = 0x65
+        
+        # Байты 1-55: заполняем нулями (индексы 1-55)
+        for i in range(1, 56):
             packet[i] = 0
         
         # Байты 56-59: угол в радианах как float32 (little-endian)
-        # Используем struct.pack для упаковки float32 в little-endian
         angle_bytes = struct.pack('<f', angle_rad)
         packet[55:59] = angle_bytes  # Байты 56-59 (индексы 55-58)
         
-        # Байты 60-116: заполняем нулями (индексы 59-115)
-        for i in range(59, 116):
+        # Байты 60-116: заполняем нулями (индексы 59-116)
+        for i in range(59, 117):
             packet[i] = 0
+        
+        # Вычисление контрольной суммы CS = 0xFF - (0xFF & Σᵢ СДᵢ)
+        # Суммируем все байты от 0 до 116 (HDR и DATA)
+        checksum = 0
+        for i in range(117):  # Байты 0-116
+            checksum += packet[i]
+        
+        # CS = 0xFF - (0xFF & checksum)
+        packet[117] = 0xFF - (0xFF & checksum)
+        
+        # Байт 118: 0x45
+        packet[118] = 0x45
+        
+        # Байт 119: 0xCF
+        packet[119] = 0xCF
         
         return packet
     
@@ -277,7 +298,8 @@ def main():
                 
                 # Вывод информации о переданном пакете (каждый пакет)
                 print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                      f"Байты 56-59={packet[55:59].hex()}")
+                      f"Байты 56-59={packet[55:59].hex()}, CS={packet[117]:02x}, "
+                      f"Заголовок={packet[0]:02x}{packet[118]:02x}{packet[119]:02x}")
             else:
                 print("Ошибка отправки пакета")
             
