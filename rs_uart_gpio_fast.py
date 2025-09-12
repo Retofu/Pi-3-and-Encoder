@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RS-485 передача через аппаратный UART на GPIO14/15
+RS-485 передача через аппаратный UART на GPIO14/15 - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
 """
 
 import pigpio
@@ -21,7 +21,7 @@ PPR = 20  # Разрешение энкодера (импульсов на об�
 
 # Настройки UART
 UART_DEVICE = '/dev/serial0'  # Аппаратный UART Raspberry Pi
-UART_BAUDRATE = 507000  # Максимальная скорость по ТЗ для передачи 120 байт за 2.75 мс
+UART_BAUDRATE = 507000  # Максимальная скорость по ТЗ
 
 # Глобальные переменные для данных энкодера
 counter = 0
@@ -52,16 +52,10 @@ class EncoderReader:
         self.pi.set_mode(Z_PIN, pigpio.INPUT)
         self.pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
         
-        # Фильтр дребезга
-        self.pi.set_glitch_filter(A_PIN, 200)
-        self.pi.set_glitch_filter(B_PIN, 200)
-        self.pi.set_glitch_filter(Z_PIN, 200)
-        
-        # Диагностика состояния пинов
-        print("Диагностика энкодера:")
-        print(f"  Пин A (GPIO{A_PIN}): {self.pi.read(A_PIN)}")
-        print(f"  Пин B (GPIO{B_PIN}): {self.pi.read(B_PIN)}")
-        print(f"  Пин Z (GPIO{Z_PIN}): {self.pi.read(Z_PIN)}")
+        # Минимальный фильтр дребезга для максимальной скорости
+        self.pi.set_glitch_filter(A_PIN, 50)
+        self.pi.set_glitch_filter(B_PIN, 50)
+        self.pi.set_glitch_filter(Z_PIN, 50)
         
         # Обработчики прерываний
         self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
@@ -82,27 +76,20 @@ class EncoderReader:
         print("Энкодер остановлен")
         
     def _handle_A(self, gpio, level, tick):
-        """Обработчик фазы A"""
+        """Обработчик фазы A - оптимизированный"""
         global counter
         if level == pigpio.TIMEOUT or not self.running:
             return
-        try:
-            a = self.pi.read(A_PIN)
-            b = self.pi.read(B_PIN)
-            
-            # Логика энкодера
-            if level == 1:  # RISING edge на A
-                if b == 0:
-                    counter += 1
-                else:
-                    counter -= 1
-            else:  # FALLING edge на A
-                if b == 1:
-                    counter += 1
-                else:
-                    counter -= 1
-        except Exception as e:
-            print(f"Ошибка в обработчике A: {e}")
+        
+        # Читаем оба пина одновременно
+        a = self.pi.read(A_PIN)
+        b = self.pi.read(B_PIN)
+        
+        # Оптимизированная логика энкодера
+        if level == 1:  # RISING edge на A
+            counter += 1 if b == 0 else -1
+        else:  # FALLING edge на A
+            counter += 1 if b == 1 else -1
             
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
@@ -111,7 +98,7 @@ class EncoderReader:
             counter = 0
 
 class RS485Transmitter:
-    """Класс для передачи данных через RS-485 через аппаратный UART"""
+    """Класс для передачи данных через RS-485 через аппаратный UART - ОПТИМИЗИРОВАННЫЙ"""
     
     def __init__(self, device=UART_DEVICE, baudrate=UART_BAUDRATE):
         self.device = device
@@ -119,6 +106,14 @@ class RS485Transmitter:
         self.serial_port = None
         self.pi = None
         self.running = False
+        
+        # Предварительно создаем шаблон пакета для ускорения
+        self.packet_template = bytearray(120)
+        self.packet_template[0] = 0x65  # Байт 0
+        # Байты 1-55 уже заполнены нулями
+        # Байты 60-116 уже заполнены нулями
+        self.packet_template[118] = 0x45  # Байт 118
+        self.packet_template[119] = 0xCF  # Байт 119
         
     def start(self):
         """Инициализация RS-485 интерфейса через UART"""
@@ -132,20 +127,24 @@ class RS485Transmitter:
             self.pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
             self.pi.write(RS485_DE_PIN, 0)  # Отключить передачу
             
-            # Инициализация UART
+            # Инициализация UART с минимальными настройками
             self.serial_port = serial.Serial(
                 port=self.device,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.1
+                timeout=0.01,  # Минимальный timeout
+                write_timeout=0.01  # Минимальный write timeout
             )
             
+            # Очищаем буферы
+            self.serial_port.reset_input_buffer()
+            self.serial_port.reset_output_buffer()
+            
             self.running = True
-            print(f"RS-485 инициализирован через UART: {self.device}, {self.baudrate} bps")
+            print(f"RS-485 инициализирован: {self.device}, {self.baudrate} bps")
             print(f"DE пин: GPIO{RS485_DE_PIN}")
-            print("UART использует GPIO14 (TX) и GPIO15 (RX)")
             
         except Exception as e:
             print(f"Ошибка инициализации RS-485 UART: {e}")
@@ -162,34 +161,15 @@ class RS485Transmitter:
         print("RS-485 остановлен")
     
     def create_data_packet(self, angle_rad):
-        """
-        Создание пакета данных размером 120 байт
-        Байт 0: 0x65
-        Байты 1-55 и 60-116: 0
-        Байты 56-59: угол в радианах (float32, little-endian)
-        Байт 117: контрольная сумма CS = 0xFF - (0xFF & Σᵢ СДᵢ)
-        Байт 118: 0x45
-        Байт 119: 0xCF
-        """
-        packet = bytearray(120)
-        
-        # Байт 0: 0x65
-        packet[0] = 0x65
-        
-        # Байты 1-55: заполняем нулями (индексы 1-55)
-        for i in range(1, 56):
-            packet[i] = 0
+        """Создание пакета данных - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
+        # Копируем шаблон
+        packet = self.packet_template[:]
         
         # Байты 56-59: угол в радианах как float32 (little-endian)
         angle_bytes = struct.pack('<f', angle_rad)
         packet[55:59] = angle_bytes  # Байты 56-59 (индексы 55-58)
         
-        # Байты 60-116: заполняем нулями (индексы 59-116)
-        for i in range(59, 117):
-            packet[i] = 0
-        
         # Вычисление контрольной суммы CS = 0xFF - (0xFF & Σᵢ СДᵢ)
-        # Суммируем все байты от 0 до 116 (HDR и DATA)
         checksum = 0
         for i in range(117):  # Байты 0-116
             checksum += packet[i]
@@ -197,23 +177,16 @@ class RS485Transmitter:
         # CS = 0xFF - (0xFF & checksum)
         packet[117] = 0xFF - (0xFF & checksum)
         
-        # Байт 118: 0x45
-        packet[118] = 0x45
-        
-        # Байт 119: 0xCF
-        packet[119] = 0xCF
-        
         return packet
     
     def send_packet(self, packet):
-        """Отправка пакета данных через RS-485"""
+        """Отправка пакета данных через RS-485 - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
         if not self.running:
             return False
         
         try:
-            # Включаем передачу
+            # Включаем передачу (минимальная задержка)
             self.pi.write(RS485_DE_PIN, 1)
-            time.sleep(0.0001)  # Минимальная задержка
             
             # Отправляем пакет через UART
             self.serial_port.write(packet)
@@ -229,24 +202,23 @@ class RS485Transmitter:
             return False
 
 def update_angle():
-    """Обновление угла в радианах"""
+    """Обновление угла в радианах - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
     global counter, angle_rad
     
-    # Расчет угла в радианах
-    angle_rad = (counter % PPR) * (2 * math.pi / PPR)
-    
-    # Если counter отрицательный, нормализуем его
+    # Оптимизированный расчет угла
     if counter < 0:
         angle_rad = (PPR + (counter % PPR)) * (2 * math.pi / PPR)
+    else:
+        angle_rad = (counter % PPR) * (2 * math.pi / PPR)
 
 def main():
-    """Основная функция"""
+    """Основная функция - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
     global counter, angle_rad
     
-    print("=== Raspberry Pi 3 Encoder + RS-485 UART GPIO ===")
-    print("Использует аппаратный UART на GPIO14/15 для максимальной скорости")
-    print(f"UART: {UART_DEVICE}, Скорость: {UART_BAUDRATE} bps")
+    print("=== Raspberry Pi 3 Encoder + RS-485 UART GPIO FAST ===")
+    print(f"UART: {UART_DEVICE}, Скорость: {UART_BAUDRATE} bps (МАКСИМАЛЬНАЯ)")
     print(f"DE пин: GPIO{RS485_DE_PIN}")
+    print("ОПТИМИЗИРОВАННАЯ ВЕРСИЯ для максимальной скорости")
     
     # Инициализация энкодера
     encoder = EncoderReader()
@@ -266,45 +238,54 @@ def main():
         encoder.stop()
         return
     
-    print("Система запущена. Передача данных: 2.75 мс передача + 0.25 мс пауза = 3 мс цикл")
+    print("Система запущена. Цель: 2.75 мс передача + 0.25 мс пауза = 3 мс цикл")
     print("Нажмите Ctrl+C для остановки")
     
     packet_count = 0
+    cycle_times = []
     
     try:
         while True:
+            # Измеряем время начала цикла
+            cycle_start = time.time()
+            
             # Обновление угла
             update_angle()
             
             # Создание пакета данных
             packet = rs485.create_data_packet(angle_rad)
             
-            # Измеряем время начала передачи
-            start_time = time.time()
-            
             # Отправка пакета
             if rs485.send_packet(packet):
                 packet_count += 1
                 
-                # Вычисляем время передачи
-                transmission_time = (time.time() - start_time) * 1000  # в мс
+                # Вычисляем время цикла
+                cycle_time = (time.time() - cycle_start) * 1000  # в мс
+                cycle_times.append(cycle_time)
                 
-                # Вывод информации о переданном пакете (каждый пакет)
+                # Вывод информации (каждый пакет)
+                print(f"чи={cycle_time:.2f} мс")
                 print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                      f"Байты 56-59={packet[55:59].hex()}, CS={packet[117]:02x}, "
-                      f"Время передачи={transmission_time:.2f} мс")
+                      f"Байты 56-59={packet[55:59].hex()}, CS={packet[117]:02x}")
+                
+                # Статистика каждые 100 пакетов
+                if packet_count % 100 == 0:
+                    avg_time = sum(cycle_times[-100:]) / min(100, len(cycle_times))
+                    min_time = min(cycle_times[-100:])
+                    max_time = max(cycle_times[-100:])
+                    print(f"Статистика (последние 100): Среднее={avg_time:.2f} мс, "
+                          f"Мин={min_time:.2f} мс, Макс={max_time:.2f} мс")
             else:
                 print("Ошибка отправки пакета")
-            
-            # Дополнительная диагностика каждые 1000 пакетов
-            if packet_count % 1000 == 0:
-                print(f"Диагностика: Пакетов={packet_count}, Счетчик={counter}, Угол={angle_rad:.3f} рад")
             
             # Пауза между пакетами (0.25 мс)
             time.sleep(0.00025)
             
     except KeyboardInterrupt:
         print("\nОстановка...")
+        if cycle_times:
+            avg_time = sum(cycle_times) / len(cycle_times)
+            print(f"Общая статистика: Среднее время цикла={avg_time:.2f} мс")
     finally:
         rs485.stop()
         encoder.stop()
