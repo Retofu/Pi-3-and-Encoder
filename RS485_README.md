@@ -61,7 +61,8 @@ python rs_gpio.py           # Программная передача через
 python rs_gpio_silent.py    # Программная передача (без вывода)
 python rs_uart_gpio.py      # Аппаратный UART на GPIO14/15
 python rs_uart_gpio_fast.py # Аппаратный UART (оптимизированный)
-python rs_uart_gpio_ultra.py # Аппаратный UART (ультра-быстрый, РЕКОМЕНДУЕТСЯ)
+python rs_uart_gpio_ultra.py # Аппаратный UART (ультра-быстрый)
+python rs_uart_gpio_extreme.py # Аппаратный UART (экстремально быстрый, РЕКОМЕНДУЕТСЯ)
 ```
 
 **Для тестирования RS-485 через GPIO:**
@@ -166,11 +167,13 @@ python test_encoder.py
 
 3. **Запустите скрипт:**
    ```bash
-   python3 rs_uart_gpio_ultra.py  # Рекомендуется для максимальной скорости
+   python3 rs_uart_gpio_extreme.py  # Рекомендуется для максимальной скорости
    # или
-   python3 rs_uart_gpio_fast.py   # С подробной статистикой
+   python3 rs_uart_gpio_ultra.py    # Ультра-быстрая версия
    # или
-   python3 rs_uart_gpio.py        # Базовая версия
+   python3 rs_uart_gpio_fast.py     # С подробной статистикой
+   # или
+   python3 rs_uart_gpio.py          # Базовая версия
    ```
 
 **Подробная инструкция:** см. файл `setup_uart_gpio.md`

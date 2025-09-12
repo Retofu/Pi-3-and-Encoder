@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-RS-485 передача через аппаратный UART на GPIO14/15 - УЛЬТРА-БЫСТРАЯ ВЕРСИЯ
-БЕЗ ВЫВОДА В КОНСОЛЬ В ОСНОВНОМ ЦИКЛЕ
+RS-485 передача через аппаратный UART на GPIO14/15 - ЭКСТРЕМАЛЬНО БЫСТРАЯ ВЕРСИЯ
+МАКСИМАЛЬНАЯ ОПТИМИЗАЦИЯ ДЛЯ ДОСТИЖЕНИЯ 3 МС ЦИКЛА
 """
 
 import pigpio
@@ -27,6 +27,9 @@ UART_BAUDRATE = 507000  # Максимальная скорость по ТЗ
 # Глобальные переменные для данных энкодера
 counter = 0
 angle_rad = 0.0
+
+# Предварительно вычисленные константы
+ANGLE_MULTIPLIER = 2 * math.pi / PPR  # 0.3141592653589793
 
 class EncoderReader:
     """Класс для чтения данных с энкодера"""
@@ -95,7 +98,7 @@ class EncoderReader:
             counter = 0
 
 class RS485Transmitter:
-    """Класс для передачи данных через RS-485 через аппаратный UART"""
+    """Класс для передачи данных через RS-485 через аппаратный UART - ЭКСТРЕМАЛЬНО ОПТИМИЗИРОВАННЫЙ"""
     
     def __init__(self, device=UART_DEVICE, baudrate=UART_BAUDRATE):
         self.device = device
@@ -109,6 +112,26 @@ class RS485Transmitter:
         self.packet_template[0] = 0x65
         self.packet_template[118] = 0x45
         self.packet_template[119] = 0xCF
+        
+        # Предварительно создаем пакеты для всех возможных углов
+        self.precomputed_packets = {}
+        self._precompute_packets()
+        
+    def _precompute_packets(self):
+        """Предварительное вычисление пакетов для всех возможных углов"""
+        for i in range(PPR):
+            angle = i * ANGLE_MULTIPLIER
+            packet = self.packet_template[:]
+            
+            # Упаковываем угол
+            angle_bytes = struct.pack('<f', angle)
+            packet[55:59] = angle_bytes
+            
+            # Быстрое вычисление контрольной суммы
+            checksum = 0x65 + sum(angle_bytes)
+            packet[117] = 0xFF - (0xFF & checksum)
+            
+            self.precomputed_packets[i] = packet
         
     def start(self):
         """Инициализация RS-485 интерфейса через UART"""
@@ -147,18 +170,9 @@ class RS485Transmitter:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
     
-    def create_data_packet(self, angle_rad):
-        """Создание пакета данных - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
-        packet = self.packet_template[:]
-        
-        # Упаковываем угол
-        angle_bytes = struct.pack('<f', angle_rad)
-        packet[55:59] = angle_bytes
-        
-        # Быстрое вычисление контрольной суммы
-        checksum = 0x65 + sum(angle_bytes)  # 0x65 + сумма байтов угла
-        packet[117] = 0xFF - (0xFF & checksum)
-        return packet
+    def get_packet(self, counter_value):
+        """Получение предварительно вычисленного пакета"""
+        return self.precomputed_packets[counter_value % PPR]
     
     def send_packet(self, packet):
         """Отправка пакета данных через RS-485"""
@@ -174,16 +188,9 @@ class RS485Transmitter:
         except:
             return False
 
-def update_angle():
-    """Обновление угла в радианах - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ"""
-    global counter, angle_rad
-    
-    # Оптимизированный расчет без лишних операций
-    angle_rad = (counter % PPR) * 0.3141592653589793  # 2*pi/PPR = 0.314...
-
 def main():
-    """Основная функция - УЛЬТРА-БЫСТРАЯ ВЕРСИЯ"""
-    global counter, angle_rad
+    """Основная функция - ЭКСТРЕМАЛЬНО БЫСТРАЯ ВЕРСИЯ"""
+    global counter
     
     # Инициализация энкодера
     encoder = EncoderReader()
@@ -202,10 +209,14 @@ def main():
     
     try:
         while True:
-            update_angle()
-            packet = rs485.create_data_packet(angle_rad)
+            # Получаем предварительно вычисленный пакет
+            packet = rs485.get_packet(counter)
+            
+            # Отправляем пакет
             rs485.send_packet(packet)
-            time.sleep(0.00025)
+            
+            # Пауза между пакетами (0.25 мс)
+            # time.sleep(0.00025)
             
     except KeyboardInterrupt:
         pass
