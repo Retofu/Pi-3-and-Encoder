@@ -282,7 +282,8 @@ def main():
         encoder.stop()
         return
     
-    print("Система запущена. Передача данных каждые 3 мс. Нажмите Ctrl+C для остановки")
+    print("Система запущена. Передача данных: 2.75 мс передача + 0.25 мс пауза = 3 мс цикл")
+    print("Нажмите Ctrl+C для остановки")
     
     packet_count = 0
     
@@ -294,14 +295,20 @@ def main():
             # Создание пакета данных
             packet = rs485.create_data_packet(angle_rad)
             
+            # Измеряем время начала передачи
+            start_time = time.time()
+            
             # Отправка пакета
             if rs485.send_packet(packet):
                 packet_count += 1
                 
+                # Вычисляем время передачи
+                transmission_time = (time.time() - start_time) * 1000  # в мс
+                
                 # Вывод информации о переданном пакете (каждый пакет)
                 print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
                       f"Байты 56-59={packet[55:59].hex()}, CS={packet[117]:02x}, "
-                      f"Заголовок={packet[0]:02x}{packet[118]:02x}{packet[119]:02x}")
+                      f"Время передачи={transmission_time:.2f} мс")
             else:
                 print("Ошибка отправки пакета")
             
@@ -309,8 +316,8 @@ def main():
             if packet_count % 1000 == 0:
                 print(f"Диагностика: Пакетов={packet_count}, Счетчик={counter}, Угол={angle_rad:.3f} рад")
             
-            # Интервал 3 мс
-            time.sleep(0.003)
+            # Пауза между пакетами (0.25 мс)
+            time.sleep(0.00025)
             
     except KeyboardInterrupt:
         print("\nОстановка...")
