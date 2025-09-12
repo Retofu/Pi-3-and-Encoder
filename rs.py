@@ -276,11 +276,8 @@ def main():
                 packet_count += 1
                 
                 # Вывод информации о переданном пакете (каждый пакет)
-                if True:  # Выводим каждый пакет
-                    # Проверяем правильность упаковки угла
-                    expected_angle = struct.unpack('<f', packet[55:59])[0]
-                    print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                          f"Байты 56-59={packet[55:59].hex()}, Проверка={expected_angle:.3f}")
+                print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
+                      f"Байты 56-59={packet[55:59].hex()}")
             else:
                 print("Ошибка отправки пакета")
             
