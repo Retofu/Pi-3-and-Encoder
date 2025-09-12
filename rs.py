@@ -73,6 +73,12 @@ class EncoderReader:
         self.pi.set_glitch_filter(B_PIN, 200)
         self.pi.set_glitch_filter(Z_PIN, 200)
         
+        # Диагностика состояния пинов
+        print("Диагностика энкодера:")
+        print(f"  Пин A (GPIO{A_PIN}): {self.pi.read(A_PIN)}")
+        print(f"  Пин B (GPIO{B_PIN}): {self.pi.read(B_PIN)}")
+        print(f"  Пин Z (GPIO{Z_PIN}): {self.pi.read(Z_PIN)}")
+        
         # Обработчики прерываний
         self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
         self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
@@ -99,9 +105,25 @@ class EncoderReader:
         try:
             a = self.pi.read(A_PIN)
             b = self.pi.read(B_PIN)
-            counter += 1 if a == b else -1
-        except:
-            pass
+            
+            # Альтернативная логика энкодера (более надежная)
+            # При переходе A с 0 на 1, если B=0, то +1, если B=1, то -1
+            if level == 1:  # RISING edge на A
+                if b == 0:
+                    counter += 1
+                else:
+                    counter -= 1
+            else:  # FALLING edge на A
+                if b == 1:
+                    counter += 1
+                else:
+                    counter -= 1
+            
+            # Выводим информацию о каждом изменении для диагностики
+            if abs(counter) % 10 == 0 and counter != 0:  # Каждые 10 импульсов
+                print(f"Энкодер: A={a}, B={b}, Счетчик={counter}")
+        except Exception as e:
+            print(f"Ошибка в обработчике A: {e}")
             
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
@@ -207,6 +229,24 @@ def update_angle():
     # Расчет угла в радианах (точно так же, как в modbus.py)
     angle_rad = (counter % PPR) * (2 * math.pi / PPR)
 
+def test_encoder(encoder, duration=10):
+    """Тестирование энкодера в течение указанного времени"""
+    global counter
+    print(f"\n=== Тест энкодера на {duration} секунд ===")
+    print("Крутите энкодер и наблюдайте за изменением счетчика...")
+    
+    start_time = time.time()
+    last_counter = counter
+    
+    while time.time() - start_time < duration:
+        if counter != last_counter:
+            print(f"Счетчик изменился: {last_counter} -> {counter}")
+            last_counter = counter
+        time.sleep(0.1)
+    
+    print(f"Тест завершен. Финальный счетчик: {counter}")
+    return counter != 0
+
 def main():
     """Основная функция"""
     global counter, angle_rad
@@ -217,6 +257,17 @@ def main():
     encoder = EncoderReader()
     try:
         encoder.start()
+        
+        # Тест энкодера
+        print("\nПроверка работы энкодера...")
+        if not test_encoder(encoder, 5):
+            print("ВНИМАНИЕ: Энкодер не реагирует на вращение!")
+            print("Проверьте подключение пинов:")
+            print(f"  A_PIN = GPIO{A_PIN} (физический pin 11)")
+            print(f"  B_PIN = GPIO{B_PIN} (физический pin 15)")
+            print(f"  Z_PIN = GPIO{Z_PIN} (физический pin 13)")
+            print("Продолжаем работу в режиме симуляции...")
+        
     except Exception as e:
         print(f"Ошибка инициализации энкодера: {e}")
         return
@@ -248,6 +299,10 @@ def main():
                           f"Байты 56-59={packet[55:59].hex()}")
             else:
                 print("Ошибка отправки пакета")
+            
+            # Дополнительная диагностика каждые 1000 пакетов
+            if counter % 1000 == 0 and counter != 0:
+                print(f"Диагностика: Счетчик={counter}, Угол={angle_rad:.3f} рад")
             
             # Интервал 3 мс
             time.sleep(0.003)
