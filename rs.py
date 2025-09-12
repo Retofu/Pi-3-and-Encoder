@@ -1,51 +1,36 @@
+#!/usr/bin/env python3
+"""
+RS-485 передача через аппаратный UART - МИНИМАЛЬНАЯ ВЕРСИЯ
+Максимальная оптимизация для достижения 3 мс цикла
+"""
+
 import pigpio
 import math
 import time
-import threading
-import serial
 import struct
-import glob
+import serial
 import os
 
-# Настройка пинов энкодера (из modbus.py)
-A_PIN = 17  # Фаза A (GPIO17, pin 11)
-B_PIN = 22  # Фаза B (GPIO22, pin 12) 
-Z_PIN = 27  # Фаза Z (GPIO27, pin 13)
+# Настройка пинов энкодера
+A_PIN = 17
+B_PIN = 22
+Z_PIN = 27
 
-PPR = 1200  # Разрешение энкодера (импульсов на оборот)
+# Настройка пинов RS-485
+RS485_DE_PIN = 23
 
-# Настройки RS-485
-RS485_BAUDRATE = 9600
-RS485_TIMEOUT = 0.1
+PPR = 20
+UART_DEVICE = '/dev/serial0'
+UART_BAUDRATE = 507000
 
-def find_serial_ports():
-    """Поиск доступных последовательных портов"""
-    ports = []
-    
-    # Поиск USB-адаптеров
-    usb_ports = glob.glob('/dev/ttyUSB*')
-    ports.extend(usb_ports)
-    
-    # Поиск ACM портов (USB CDC)
-    acm_ports = glob.glob('/dev/ttyACM*')
-    ports.extend(acm_ports)
-    
-    # Поиск других последовательных портов
-    other_ports = glob.glob('/dev/ttyS*')
-    ports.extend(other_ports)
-    
-    # Фильтруем только существующие порты
-    existing_ports = [port for port in ports if os.path.exists(port)]
-    
-    return sorted(existing_ports)
-
-# Глобальные переменные для данных энкодера
+# Глобальные переменные
 counter = 0
 angle_rad = 0.0
 
+# Предварительно вычисленные константы
+ANGLE_MULTIPLIER = 2 * math.pi / PPR
+
 class EncoderReader:
-    """Класс для чтения данных с энкодера (адаптирован из modbus.py)"""
-    
     def __init__(self):
         self.pi = None
         self.cb_a = None
@@ -53,14 +38,12 @@ class EncoderReader:
         self.running = False
         
     def start(self):
-        """Инициализация и запуск чтения энкодера"""
         global counter
-        
         self.pi = pigpio.pi()
         if not self.pi.connected:
             raise RuntimeError("pigpio daemon is not running")
             
-        # Настройка пинов
+        # Минимальная настройка пинов
         self.pi.set_mode(A_PIN, pigpio.INPUT)
         self.pi.set_pull_up_down(A_PIN, pigpio.PUD_UP)
         self.pi.set_mode(B_PIN, pigpio.INPUT)
@@ -68,26 +51,18 @@ class EncoderReader:
         self.pi.set_mode(Z_PIN, pigpio.INPUT)
         self.pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
         
-        # Фильтр дребезга
-        self.pi.set_glitch_filter(A_PIN, 200)
-        self.pi.set_glitch_filter(B_PIN, 200)
-        self.pi.set_glitch_filter(Z_PIN, 200)
-        
-        # Диагностика состояния пинов
-        print("Диагностика энкодера:")
-        print(f"  Пин A (GPIO{A_PIN}): {self.pi.read(A_PIN)}")
-        print(f"  Пин B (GPIO{B_PIN}): {self.pi.read(B_PIN)}")
-        print(f"  Пин Z (GPIO{Z_PIN}): {self.pi.read(Z_PIN)}")
+        # Минимальный фильтр дребезга
+        self.pi.set_glitch_filter(A_PIN, 50)
+        self.pi.set_glitch_filter(B_PIN, 50)
+        self.pi.set_glitch_filter(Z_PIN, 50)
         
         # Обработчики прерываний
         self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
         self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
         
         self.running = True
-        print("Энкодер инициализирован")
         
     def stop(self):
-        """Остановка чтения энкодера"""
         self.running = False
         if self.cb_a:
             self.cb_a.cancel()
@@ -95,180 +70,128 @@ class EncoderReader:
             self.cb_z.cancel()
         if self.pi:
             self.pi.stop()
-        print("Энкодер остановлен")
         
     def _handle_A(self, gpio, level, tick):
-        """Обработчик фазы A"""
         global counter
         if level == pigpio.TIMEOUT or not self.running:
             return
-        try:
-            a = self.pi.read(A_PIN)
-            b = self.pi.read(B_PIN)
-            
-            # Альтернативная логика энкодера (более надежная)
-            # При переходе A с 0 на 1, если B=0, то +1, если B=1, то -1
-            if level == 1:  # RISING edge на A
-                if b == 0:
-                    counter += 1
-                else:
-                    counter -= 1
-            else:  # FALLING edge на A
-                if b == 1:
-                    counter += 1
-                else:
-                    counter -= 1
-            
-            # Убираем диагностический вывод из обработчика прерываний для повышения производительности
-        except Exception as e:
-            print(f"Ошибка в обработчике A: {e}")
+        
+        a = self.pi.read(A_PIN)
+        b = self.pi.read(B_PIN)
+        
+        if level == 1:
+            counter += 1 if b == 0 else -1
+        else:
+            counter += 1 if b == 1 else -1
             
     def _handle_Z(self, gpio, level, tick):
-        """Обработчик индекса Z"""
         global counter
-        if level == 1 and self.running:  # RISING
+        if level == 1 and self.running:
             counter = 0
 
 class RS485Transmitter:
-    """Класс для передачи данных через RS-485"""
-    
-    def __init__(self, device=None, baudrate=RS485_BAUDRATE):
+    def __init__(self, device=UART_DEVICE, baudrate=UART_BAUDRATE):
         self.device = device
         self.baudrate = baudrate
         self.serial_port = None
+        self.pi = None
         self.running = False
         
-    def start(self):
-        """Инициализация RS-485 интерфейса"""
-        # Если устройство не указано, ищем доступные порты
-        if self.device is None:
-            available_ports = find_serial_ports()
-            if not available_ports:
-                print("ВНИМАНИЕ: Не найдено доступных последовательных портов")
-                print("Переходим в режим симуляции (данные только в консоль)")
-                self.running = True
-                return
-            
-            print("Доступные последовательные порты:")
-            for i, port in enumerate(available_ports):
-                print(f"  {i}: {port}")
-            
-            # Пробуем подключиться к первому найденному порту
-            self.device = available_ports[0]
-            print(f"Используем порт: {self.device}")
+        # Предварительно создаем все возможные пакеты
+        self.packets = []
+        self._create_all_packets()
         
+    def _create_all_packets(self):
+        """Создаем все возможные пакеты заранее"""
+        for i in range(PPR):
+            packet = bytearray(120)
+            packet[0] = 0x65
+            packet[118] = 0x45
+            packet[119] = 0xCF
+            
+            # Упаковываем угол
+            angle = i * ANGLE_MULTIPLIER
+            angle_bytes = struct.pack('<f', angle)
+            packet[55:59] = angle_bytes
+            
+            # Контрольная сумма
+            checksum = 0x65 + sum(angle_bytes)
+            packet[117] = 0xFF - (0xFF & checksum)
+            
+            self.packets.append(packet)
+        
+    def start(self):
         try:
+            self.pi = pigpio.pi()
+            if not self.pi.connected:
+                raise RuntimeError("pigpio daemon is not running")
+            
+            self.pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
+            self.pi.write(RS485_DE_PIN, 0)
+            
             self.serial_port = serial.Serial(
                 port=self.device,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=RS485_TIMEOUT
+                timeout=0.001,
+                write_timeout=0.001
             )
+            
+            self.serial_port.reset_input_buffer()
+            self.serial_port.reset_output_buffer()
+            
             self.running = True
-            print(f"RS-485 инициализирован: {self.device}, {self.baudrate} bps")
+            
         except Exception as e:
-            print(f"Ошибка подключения к {self.device}: {e}")
-            print("Переходим в режим симуляции (данные только в консоль)")
-            self.running = True
+            raise
     
     def stop(self):
-        """Остановка RS-485 интерфейса"""
         self.running = False
+        if self.pi:
+            self.pi.write(RS485_DE_PIN, 0)
+            self.pi.stop()
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
-        print("RS-485 остановлен")
     
-    def create_data_packet(self, angle_rad):
-        """
-        Создание пакета данных размером 120 байт
-        Байт 0: 0x65
-        Байты 1-55 и 60-116: 0
-        Байты 56-59: угол в радианах (float32, little-endian)
-        Байт 117: контрольная сумма CS = 0xFF - (0xFF & Σᵢ СДᵢ)
-        Байт 118: 0x45
-        Байт 119: 0xCF
-        """
-        packet = bytearray(120)
-        
-        # Байт 0: 0x65
-        packet[0] = 0x65
-        
-        # Байты 1-55: заполняем нулями (индексы 1-55)
-        for i in range(1, 56):
-            packet[i] = 0
-        
-        # Байты 56-59: угол в радианах как float32 (little-endian)
-        angle_bytes = struct.pack('<f', angle_rad)
-        packet[55:59] = angle_bytes  # Байты 56-59 (индексы 55-58)
-        
-        # Байты 60-116: заполняем нулями (индексы 59-116)
-        for i in range(59, 117):
-            packet[i] = 0
-        
-        # Вычисление контрольной суммы CS = 0xFF - (0xFF & Σᵢ СДᵢ)
-        # Суммируем все байты от 0 до 116 (HDR и DATA)
-        checksum = 0
-        for i in range(117):  # Байты 0-116
-            checksum += packet[i]
-        
-        # CS = 0xFF - (0xFF & checksum)
-        packet[117] = 0xFF - (0xFF & checksum)
-        
-        # Байт 118: 0x45
-        packet[118] = 0x45
-        
-        # Байт 119: 0xCF
-        packet[119] = 0xCF
-        
-        return packet
-    
-    def send_packet(self, packet):
-        """Отправка пакета данных через RS-485"""
+    def send_packet(self, counter_value):
+        """Отправка пакета с минимальными операциями"""
         if not self.running:
             return False
-            
-        # Если нет подключения к порту, работаем в режиме симуляции
-        if not self.serial_port or not self.serial_port.is_open:
-            return True  # Возвращаем True для симуляции
         
         try:
+            # Получаем предварительно созданный пакет
+            packet = self.packets[counter_value % PPR]
+            
+            # Включаем передачу
+            self.pi.write(RS485_DE_PIN, 1)
+            
+            # Отправляем пакет
             self.serial_port.write(packet)
-            self.serial_port.flush()  # Обеспечиваем немедленную отправку
+            time.sleep(0.0025)
+            
+            # Отключаем передачу
+            self.pi.write(RS485_DE_PIN, 0)
+            
             return True
-        except Exception as e:
-            print(f"Ошибка отправки пакета: {e}")
+        except:
             return False
 
-def update_angle():
-    """Обновление угла в радианах (адаптировано из modbus.py)"""
-    global counter, angle_rad
-    
-    # Расчет угла в радианах (точно так же, как в modbus.py)
-    # Используем модуло для нормализации угла в диапазоне [0, 2π)
-    angle_rad = (counter % PPR) * (2 * math.pi / PPR)
-    
-    # Если counter отрицательный, нормализуем его
-    if counter < 0:
-        angle_rad = (PPR + (counter % PPR)) * (2 * math.pi / PPR)
-
-
 def main():
-    """Основная функция"""
-    global counter, angle_rad
+    global counter
     
-    print("=== Raspberry Pi 3 Encoder + RS-485 Transmitter ===")
+    # Устанавливаем высокий приоритет процессу
+    try:
+        os.nice(-20)  # Максимальный приоритет
+    except:
+        pass
     
     # Инициализация энкодера
     encoder = EncoderReader()
     try:
         encoder.start()
-        
-        print("✓ Энкодер инициализирован")
-        
     except Exception as e:
-        print(f"Ошибка инициализации энкодера: {e}")
         return
     
     # Инициализация RS-485
@@ -276,42 +199,16 @@ def main():
     try:
         rs485.start()
     except Exception as e:
-        print(f"Ошибка инициализации RS-485: {e}")
         encoder.stop()
         return
     
-    print("Система запущена. Передача данных каждые 3 мс. Нажмите Ctrl+C для остановки")
-    
-    packet_count = 0  # Счетчик пакетов
-    
     try:
         while True:
-            # Обновление угла
-            update_angle()
-            
-            # Создание пакета данных
-            packet = rs485.create_data_packet(angle_rad)
-            
-            # Отправка пакета
-            if rs485.send_packet(packet):
-                packet_count += 1
-                
-                # Вывод информации о переданном пакете (каждый пакет)
-                print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
-                      f"Байты 56-59={packet[55:59].hex()}, CS={packet[117]:02x}, "
-                      f"Заголовок={packet[0]:02x}{packet[118]:02x}{packet[119]:02x}")
-            else:
-                print("Ошибка отправки пакета")
-            
-            # Дополнительная диагностика каждые 1000 пакетов
-            if packet_count % 1000 == 0:
-                print(f"Диагностика: Пакетов={packet_count}, Счетчик={counter}, Угол={angle_rad:.3f} рад")
-            
-            # Интервал 3 мс
-            time.sleep(0.003)
+            # Отправляем пакет напрямую по счетчику
+            rs485.send_packet(counter)
             
     except KeyboardInterrupt:
-        print("\nОстановка...")
+        pass
     finally:
         rs485.stop()
         encoder.stop()
