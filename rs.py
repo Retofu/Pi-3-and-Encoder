@@ -275,8 +275,8 @@ def main():
             if rs485.send_packet(packet):
                 packet_count += 1
                 
-                # Вывод информации о переданном пакете (каждые 10 пакетов для лучшего мониторинга)
-                if packet_count % 10 == 0:
+                # Вывод информации о переданном пакете (каждый пакет)
+                if True:  # Выводим каждый пакет
                     # Проверяем правильность упаковки угла
                     expected_angle = struct.unpack('<f', packet[55:59])[0]
                     print(f"Пакет #{packet_count}: Угол={angle_rad:.3f} рад, Счетчик={counter}, "
