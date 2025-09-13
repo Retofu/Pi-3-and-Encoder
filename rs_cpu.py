@@ -131,6 +131,7 @@ class HighSpeedTransmitter:
                 self.pi.write(RS485_DE_PIN, 1)  # Включаем передатчик
                 self.ser.write(packet)          # Отправляем данные
                 self.pi.write(RS485_DE_PIN, 0)  # Выключаем передатчик
+                time.sleep(0.0024)
                     
             return True
                     
