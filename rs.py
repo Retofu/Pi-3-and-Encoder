@@ -192,10 +192,10 @@ def main():
     except:
         pass
 
-    pigpio = pigpio.pi()
+    pi_instance = pigpio.pi()
     
     # Инициализация энкодера
-    encoder = EncoderReader(pigpio=pigpio, a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
+    encoder = EncoderReader(pigpio=pi_instance, a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
     try:
         encoder.start()
     except Exception as e:
@@ -203,7 +203,7 @@ def main():
         return
     
     # Инициализация RS-485
-    rs485 = RS485Transmitter(pigpio, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
+    rs485 = RS485Transmitter(pi_instance, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
     try:
         rs485.start()
     except Exception as e:
