@@ -31,8 +31,8 @@ angle_rad = 0.0
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 
 class EncoderReader:
-    def __init__(self, a_pin, b_pin, z_pin):
-        self._pi = None
+    def __init__(self, pigpio, a_pin, b_pin, z_pin):
+        self._pi = pigpio
         self._cb_a = None
         self._cb_z = None
         self._running = False
@@ -42,7 +42,6 @@ class EncoderReader:
 
     def start(self):
         global counter
-        self._pi = pigpio.pi()
         if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
 
@@ -93,11 +92,11 @@ class EncoderReader:
             counter = 0
 
 class RS485Transmitter:
-    def __init__(self, device, baudrate, rs485_de_pin):
+    def __init__(self, pigpio, device, baudrate, rs485_de_pin):
         self._device = device
         self._baudrate = baudrate
         self._serial_port = None
-        self._pi = None
+        self._pi = pigpio
         self._running = False
         self._rs485_de_pin = rs485_de_pin
         #Создаем пакет
@@ -108,7 +107,6 @@ class RS485Transmitter:
 
     def start(self):
         try:
-            self._pi = pigpio.pi()
             if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
 
@@ -193,9 +191,11 @@ def main():
         os.nice(-20)  # Максимальный приоритет
     except:
         pass
+
+    pigpio = pigpio.pi()
     
     # Инициализация энкодера
-    encoder = EncoderReader(a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
+    encoder = EncoderReader(pigpio=pigpio, a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
     try:
         encoder.start()
     except Exception as e:
@@ -203,7 +203,7 @@ def main():
         return
     
     # Инициализация RS-485
-    rs485 = RS485Transmitter(UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
+    rs485 = RS485Transmitter(pigpio, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
     try:
         rs485.start()
     except Exception as e:
