@@ -31,151 +31,156 @@ angle_rad = 0.0
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 
 class EncoderReader:
-    def __init__(self):
-        self.pi = None
-        self.cb_a = None
-        self.cb_z = None
-        self.running = False
-        
+    def __init__(self, a_pin, b_pin, z_pin):
+        self._pi = None
+        self._cb_a = None
+        self._cb_z = None
+        self._running = False
+        self._a_pin = a_pin
+        self._b_pin = b_pin
+        self._z_pin = z_pin
+
     def start(self):
         global counter
-        self.pi = pigpio.pi()
-        if not self.pi.connected:
+        self._pi = pigpio._pi()
+        if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
-            
+
         # Минимальная настройка пинов
-        self.pi.set_mode(A_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(A_PIN, pigpio.PUD_UP)
-        self.pi.set_mode(B_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(B_PIN, pigpio.PUD_UP)
-        self.pi.set_mode(Z_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
-        
+        self._pi.set_mode(self._a_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._a_pin, pigpio.PUD_UP)
+        self._pi.set_mode(self._b_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._b_pin, pigpio.PUD_UP)
+        self._pi.set_mode(self._z_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._z_pin, pigpio.PUD_UP)
+
         # Минимальный фильтр дребезга
-        self.pi.set_glitch_filter(A_PIN, 50)
-        self.pi.set_glitch_filter(B_PIN, 50)
-        self.pi.set_glitch_filter(Z_PIN, 50)
-        
+        self._pi.set_glitch_filter(self._a_pin, 50)
+        self._pi.set_glitch_filter(self._b_pin, 50)
+        self._pi.set_glitch_filter(self._z_pin, 50)
+
         # Обработчики прерываний
-        self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
-        self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
-        
-        self.running = True
-        
+        self._cb_a = self._pi.callback(self._a_pin, pigpio.EITHER_EDGE, self._handle_A)
+        self._cb_z = self._pi.callback(self._z_pin, pigpio.RISING_EDGE, self._handle_Z)
+
+        self._running = True
+
     def stop(self):
-        self.running = False
-        if self.cb_a:
-            self.cb_a.cancel()
-        if self.cb_z:
-            self.cb_z.cancel()
-        if self.pi:
-            self.pi.stop()
-        
+        self._running = False
+        if self._cb_a:
+            self._cb_a.cancel()
+        if self._cb_z:
+            self._cb_z.cancel()
+        if self._pi:
+            self._pi.stop()
+
     def _handle_A(self, gpio, level, tick):
         global counter
-        if level == pigpio.TIMEOUT or not self.running:
+        if level == pigpio.TIMEOUT or not self._running:
             return
-        
-        a = self.pi.read(A_PIN)
-        b = self.pi.read(B_PIN)
-        
+
+        a = self._pi.read(self._a_pin)
+        b = self._pi.read(self._b_pin)
+
         if level == 1:
             counter += 1 if b == 0 else -1
         else:
             counter += 1 if b == 1 else -1
-            
+
     def _handle_Z(self, gpio, level, tick):
         global counter
-        if level == 1 and self.running:
+        if level == 1 and self._running:
             counter = 0
 
 class RS485Transmitter:
-    def __init__(self, device=UART_DEVICE, baudrate=UART_BAUDRATE):
-        self.device = device
-        self.baudrate = baudrate
-        self.serial_port = None
-        self.pi = None
-        self.running = False
-        
+    def __init__(self, device, baudrate, rs485_de_pin):
+        self._device = device
+        self._baudrate = baudrate
+        self._serial_port = None
+        self._pi = None
+        self._running = False
+        self._rs485_de_pin = rs485_de_pin
+        #Создаем пакет
+        self._packet = bytearray(120)
+        self._packet[0] = 0x65
+        self._packet[118] = 0x45
+        self._packet[119] = 0xCF
+
     def start(self):
         try:
-            self.pi = pigpio.pi()
-            if not self.pi.connected:
+            self._pi = pigpio._pi()
+            if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
-            
-            self.pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
-            self.pi.write(RS485_DE_PIN, 0)
-            
-            self.serial_port = serial.Serial(
-                port=self.device,
-                baudrate=self.baudrate,
+
+            self._pi.set_mode(self._rs485_de_pin, pigpio.OUTPUT)
+            self._pi.write(self._rs485_de_pin, 0)
+
+            self._serial_port = serial.Serial(
+                port=self._device,
+                baudrate=self._baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,
                 write_timeout=0.001
             )
-            
-            self.serial_port.reset_input_buffer()
-            self.serial_port.reset_output_buffer()
-            
-            self.running = True
-            
+
+            self._serial_port.reset_input_buffer()
+            self._serial_port.reset_output_buffer()
+
+            self._running = True
+
         except Exception as e:
             raise
-    
+
     def stop(self):
-        self.running = False
-        if self.pi:
-            self.pi.write(RS485_DE_PIN, 0)
-            self.pi.stop()
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
-    
-    def precise_sleep(duration):
-        """Точная пауза с использованием time.monotonic()"""
-        start = time.monotonic()
-        while time.monotonic() - start < duration:
-            pass
+        self._running = False
+        if self._pi:
+            self._pi.write(self._rs485_de_pin, 0)
+            self._pi.stop()
+        if self._serial_port and self._serial_port.is_open:
+            self._serial_port.close()
 
     def send_packet(self, counter_value):
         """Отправка пакета с минимальными операциями"""
-        if not self.running:
+        if not self._running:
             return False
-        
+
         try:
+
             # Создаем пакет динамически для точного угла
-            packet = bytearray(120)
-            packet[0] = 0x65
-            packet[118] = 0x45
-            packet[119] = 0xCF
-            
+            #packet = bytearray(120)
+            #packet[0] = 0x65
+            #packet[118] = 0x45
+            #packet[119] = 0xCF
+
             # Вычисляем точный угол на основе счетчика
             angle = counter_value * ANGLE_MULTIPLIER
             angle_bytes = struct.pack('<f', angle)
-            packet[55:59] = angle_bytes
-            
+            self._packet[55:59] = angle_bytes
+
             # Контрольная сумма
             checksum = 0x65 + sum(angle_bytes)
-            packet[117] = 0xFF - (0xFF & checksum)
-            
+            self._packet[117] = 0xFF - (0xFF & checksum)
+
             # Включаем передачу
-            self.pi.write(RS485_DE_PIN, 1)
-            
+            self._pi.write(self._rs485_de_pin, 1)
+
             # Очищаем буферы перед отправкой
-            self.serial_port.reset_output_buffer()
-            
+            self._serial_port.reset_output_buffer()
+
             # Отправляем пакет
-            self.serial_port.write(packet)
-            
+            self._serial_port.write(self._packet)
+            time.sleep(0.0023)
+
             # Отключаем передачу
-            self.pi.write(RS485_DE_PIN, 0)
-            self.precise_sleep(0.0003)
+            self._pi.write(self._rs485_de_pin, 0)
+
             return True
         except Exception as e:
             # В случае ошибки отключаем передачу
             try:
-                self.pi.write(RS485_DE_PIN, 0)
+                self._pi.write(self._rs485_de_pin, 0)
             except:
                 pass
             return False
@@ -190,14 +195,14 @@ def main():
         pass
     
     # Инициализация энкодера
-    encoder = EncoderReader()
+    encoder = EncoderReader(a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
     try:
         encoder.start()
     except Exception as e:
         return
     
     # Инициализация RS-485
-    rs485 = RS485Transmitter()
+    rs485 = RS485Transmitter(UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
     try:
         rs485.start()
     except Exception as e:
