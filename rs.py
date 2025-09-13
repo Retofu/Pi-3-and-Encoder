@@ -156,11 +156,11 @@ class RS485Transmitter:
 
             # Вычисляем точный угол на основе счетчика
             angle = counter_value * ANGLE_MULTIPLIER
-            angle_bytes = struct.pack('<f', angle)
-            self._packet[55:59] = angle_bytes
+            #angle_bytes = struct.pack('<f', angle)
+            self._packet[55:59] = struct.pack('<f', angle)
 
             # Контрольная сумма
-            checksum = 0x65 + sum(angle_bytes)
+            checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
             # Включаем передачу
