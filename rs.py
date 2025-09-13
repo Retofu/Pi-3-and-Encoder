@@ -158,7 +158,6 @@ class RS485Transmitter:
 
             # Отправляем пакет
             self._serial_port.write(self._packet)
-            self._serial_port.flush()
             
             # Делаем небольшую задержку
             time.sleep(0.0023)
