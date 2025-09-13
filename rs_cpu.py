@@ -192,7 +192,6 @@ def main():
         print("\nОстановка...")
     finally:
         transmitter.running = False
-        encoder.cleanup()
 
 if __name__ == "__main__":
    
