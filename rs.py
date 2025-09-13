@@ -42,7 +42,7 @@ class EncoderReader:
 
     def start(self):
         global counter
-        self._pi = pigpio._pi()
+        self._pi = pigpio.pi()
         if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
 
@@ -108,7 +108,7 @@ class RS485Transmitter:
 
     def start(self):
         try:
-            self._pi = pigpio._pi()
+            self._pi = pigpio.pi()
             if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
 
@@ -199,6 +199,7 @@ def main():
     try:
         encoder.start()
     except Exception as e:
+        print(f"Ошибка инициализации энкодера: {e}")
         return
     
     # Инициализация RS-485
@@ -206,6 +207,7 @@ def main():
     try:
         rs485.start()
     except Exception as e:
+        print(f"Ошибка инициализации RS-485: {e}")
         encoder.stop()
         return
     
