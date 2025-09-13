@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RS-485 передача с изолированным CPU и максимальным приоритетом
+RS-485 передача с максимальным приоритетом и изоляцией CPU
 """
 
 import pigpio
@@ -24,90 +24,95 @@ UART_BAUDRATE = 507000
 
 # Глобальные переменные
 counter = 0
-angle_rad = 0.0
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 
-# Приоритет реального времени
-SCHED_FIFO = 1
-SCHED_RR = 2
-
-class RealTimeThread(threading.Thread):
+class RealTimeTransmitter:
     def init(self):
-        super().init()
-        self.daemon = True
         self.running = False
+        self.thread = None
         
-    def run(self):
-        # Привязываем поток к изолированному CPU 3
-        os.sched_setaffinity(0, {3})
-        
-        # Устанавливаем максимальный приоритет реального времени
-        param = os.sched_param(os.sched_get_priority_max(SCHED_FIFO))
-        os.sched_setscheduler(0, SCHED_FIFO, param)
-        
-        # Отключаем все возможные прерывания для этого потока
-        self._disable_interrupts()
-        
+    def start(self):
         self.running = True
-        self._main_loop()
+        self.thread = threading.Thread(target=self._transmit_loop, daemon=True)
+        self.thread.start()
     
-    def _disable_interrupts(self):
-        """Минимизируем прерывания для текущего потока"""
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+    
+    def _set_realtime_priority(self):
+        """Установка приоритета реального времени"""
         try:
-            # Отключаем GC
-            import gc
-            gc.disable()
+            # Привязка к конкретному CPU ядру (например, ядро 3)
+            os.sched_setaffinity(0, {3})
             
-            # Блокируем все сигналы
-            import signal
-            signal.pthread_sigmask(signal.SIG_BLOCK, range(1, signal.NSIG))
+            # Установка политики планирования FIFO с максимальным приоритетом
+            param = os.sched_param(os.sched_get_priority_max(os.SCHED_FIFO))
+            os.sched_setscheduler(0, os.SCHED_FIFO, param)
             
-        except:
-            pass
+            # Установка высокого nice значения
+            os.nice(-20)
+            
+        except PermissionError:
+            print("Требуются права root для установки реального времени")
+            # Падаем, если нет прав
+            raise
+        except Exception as e:
+            print(f"Ошибка установки приоритета: {e}")
     
-    def _main_loop(self):
-        """Основной цикл в реальном времени"""
+    def _transmit_loop(self):
+        """Основной цикл передачи"""
         global counter
         
-        # Инициализация оборудования
+        # Устанавливаем реальный time приоритет
+        self._set_realtime_priority()
+        
+        # Инициализация pigpio и UART
         pi = pigpio.pi()
         if not pi.connected:
             return
-            
-        # Настройка пинов
-        pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
-        pi.write(RS485_DE_PIN, 0)
-        
-        # Настройка UART
-        ser = serial.Serial(
-            port=UART_DEVICE,
-            baudrate=UART_BAUDRATE,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0,
-            write_timeout=0
-        )
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-        
-        # Предварительно созданный шаблон пакета
-        packet_template = bytearray(120)
-        packet_template[0] = 0x65
-        packet_template[118] = 0x45
-        packet_template[119] = 0xCF
-        
-        # Тайминг
-        interval = 0.003  # 3 мс
-        next_time = time.monotonic()
         
         try:
+            # Настройка пинов RS-485
+            pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
+            pi.write(RS485_DE_PIN, 0)
+            
+            # Настройка UART
+            ser = serial.Serial(
+                port=UART_DEVICE,
+                baudrate=UART_BAUDRATE,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0,
+                write_timeout=0
+            )
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            
+            # Предварительно созданный шаблон пакета
+            packet_template = bytearray(120)
+            packet_template[0] = 0x65
+            packet_template[118] = 0x45
+            packet_template[119] = 0xCF
+            
+            # Отключаем garbage collection для этого потока
+            import gc
+            gc.disable()
+            
+            # Основной цикл передачи
+            interval = 0.003  # 3 мс
+            next_time = time.monotonic()
+            
             while self.running:
                 current_time = time.monotonic()
                 
                 if current_time >= next_time:
                     # Создаем пакет
-                    packet = packet_template[:]
+                    packet = packet_template.copy()  # Копируем шаблон
+                    
+                    # Заполняем данные
                     angle = counter * ANGLE_MULTIPLIER
                     angle_bytes = struct.pack('<f', angle)
                     packet[55:59] = angle_bytes
@@ -116,19 +121,25 @@ class RealTimeThread(threading.Thread):
                     packet[117] = 0xFF - (0xFF & checksum)
                     
                     # Передача
-                    pi.write(RS485_DE_PIN, 1)
+                    pi.write(RS485_DE_PIN, 1)  # Включаем передатчик
                     ser.write(packet)
-                    ser.flush()
-                    pi.write(RS485_DE_PIN, 0)
+                    ser.flush()  # Ждем завершения передачи
+                    pi.write(RS485_DE_PIN, 0)  # Выключаем передатчик
                     
                     next_time += interval
-                else:
-                    # Микро-сон для точного тайминга
-                    time.sleep(max(0, next_time - current_time - 0.0001))
-                    
+                
+                # Короткая пауза для экономии CPU
+                time.sleep(0.0001)
+                
+        except Exception as e:
+            print(f"Ошибка в цикле передачи: {e}")
         finally:
-            pi.write(RS485_DE_PIN, 0)
-            ser.close()
+            # Гарантированно выключаем передатчик
+            try:
+                pi.write(RS485_DE_PIN, 0)
+                ser.close()
+            except:
+                pass
             pi.stop()
 
 class EncoderReader:
@@ -137,7 +148,7 @@ class EncoderReader:
         self.setup_encoder()
         
     def setup_encoder(self):
-        """Настройка энкодера на отдельном ядре"""
+        """Настройка энкодера"""
         self.pi.set_mode(A_PIN, pigpio.INPUT)
         self.pi.set_pull_up_down(A_PIN, pigpio.PUD_UP)
         self.pi.set_mode(B_PIN, pigpio.INPUT)
@@ -163,29 +174,40 @@ class EncoderReader:
     def _handle_Z(self, gpio, level, tick):
         global counter
         counter = 0
+        
+    def cleanup(self):
+        if self.pi.connected:
+            self.pi.stop()
 
 def main():
     global counter
     
+    print("Запуск системы передачи данных...")
+    print("Для остановки нажмите Ctrl+C")
+    
     # Инициализация энкодера
     encoder = EncoderReader()
     
-    # Запуск реального времени потока
-    rt_thread = RealTimeThread()
-    rt_thread.start()
+    # Запуск передатчика
+    transmitter = RealTimeTransmitter()
     
     try:
-        # Главный поток просто ждет
+        transmitter.start()
+        
+        # Главный цикл просто ждет
         while True:
             time.sleep(1)
             
     except KeyboardInterrupt:
-        rt_thread.running = False
-        rt_thread.join()
-        
+        print("\nОстановка системы...")
     finally:
-        if encoder.pi.connected:
-            encoder.pi.stop()
+        transmitter.stop()
+        encoder.cleanup()
 
 if __name__ == "__main__":
+    # Запускаем от root для реального приоритета
+    if os.geteuid() != 0:
+        print("Запустите с правами root: sudo python3 script.py")
+        exit(1)
+    
     main()
