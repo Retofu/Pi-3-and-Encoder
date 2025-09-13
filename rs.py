@@ -99,6 +99,7 @@ class RS485Transmitter:
         self._pi = pigpio
         self._running = False
         self._rs485_de_pin = rs485_de_pin
+        
         #Создаем пакет
         self._packet = bytearray(120)
         self._packet[0] = 0x65
@@ -146,12 +147,6 @@ class RS485Transmitter:
 
         try:
 
-            # Создаем пакет динамически для точного угла
-            #packet = bytearray(120)
-            #packet[0] = 0x65
-            #packet[118] = 0x45
-            #packet[119] = 0xCF
-
             # Вычисляем точный угол на основе счетчика
             angle = counter_value * ANGLE_MULTIPLIER
             #angle_bytes = struct.pack('<f', angle)
@@ -163,6 +158,9 @@ class RS485Transmitter:
 
             # Отправляем пакет
             self._serial_port.write(self._packet)
+            self._serial_port.flush()
+            
+            # Делаем небольшую задержку
             time.sleep(0.0023)
 
             return True
