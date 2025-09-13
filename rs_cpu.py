@@ -195,9 +195,5 @@ def main():
         encoder.cleanup()
 
 if __name__ == "__main__":
-    # Проверяем скорость передачи
-    transmit_time = 120 * 10 / 507000
-    print(f"Время передачи одного пакета: {transmit_time*1000:.3f} мс")
-    print(f"Теоретическая максимальная частота: {1/transmit_time:.0f} Hz")
-    
+   
     main()
