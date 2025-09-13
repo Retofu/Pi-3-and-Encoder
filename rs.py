@@ -164,9 +164,6 @@ class RS485Transmitter:
             # Включаем передачу
             self._pi.write(self._rs485_de_pin, 1)
 
-            # Очищаем буферы перед отправкой
-            self._serial_port.reset_output_buffer()
-
             # Отправляем пакет
             self._serial_port.write(self._packet)
             time.sleep(0.0023)
