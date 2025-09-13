@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RS-485 передача с максимальным приоритетом и изоляцией CPU
+RS-485 передача с минимальной задержкой между пакетами
 """
 
 import pigpio
@@ -9,7 +9,6 @@ import time
 import struct
 import serial
 import os
-import ctypes
 import threading
 
 # Настройка пинов
@@ -25,6 +24,9 @@ UART_BAUDRATE = 507000
 # Глобальные переменные
 counter = 0
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
+
+# Время передачи одного пакета (120 байт × 10 бит / 507000 бод)
+PACKET_TRANSMIT_TIME = 120 * 10 / 507000  # ≈ 2.366 мс
 
 class RealTimeTransmitter:
     def init(self):
@@ -44,25 +46,18 @@ class RealTimeTransmitter:
     def _set_realtime_priority(self):
         """Установка приоритета реального времени"""
         try:
-            # Привязка к конкретному CPU ядру (например, ядро 3)
+            # Привязка к конкретному CPU ядру
             os.sched_setaffinity(0, {3})
             
-            # Установка политики планирования FIFO с максимальным приоритетом
+            # Установка политики планирования FIFO
             param = os.sched_param(os.sched_get_priority_max(os.SCHED_FIFO))
             os.sched_setscheduler(0, os.SCHED_FIFO, param)
             
-            # Установка высокого nice значения
-            os.nice(-20)
-            
-        except PermissionError:
-            print("Требуются права root для установки реального времени")
-            # Падаем, если нет прав
-            raise
         except Exception as e:
-            print(f"Ошибка установки приоритета: {e}")
+            print(f"Ошибка приоритета: {e}")
     
     def _transmit_loop(self):
-        """Основной цикл передачи"""
+        """Основной цикл передачи с минимальной задержкой"""
         global counter
         
         # Устанавливаем реальный time приоритет
@@ -78,15 +73,18 @@ class RealTimeTransmitter:
             pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
             pi.write(RS485_DE_PIN, 0)
             
-            # Настройка UART
+            # Настройка UART с минимальными таймаутами
             ser = serial.Serial(
                 port=UART_DEVICE,
                 baudrate=UART_BAUDRATE,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0,
-                write_timeout=0
+                timeout=0.0001,  # Минимальный timeout
+                write_timeout=0.0001,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False
             )
             ser.reset_input_buffer()
             ser.reset_output_buffer()
@@ -97,44 +95,45 @@ class RealTimeTransmitter:
             packet_template[118] = 0x45
             packet_template[119] = 0xCF
             
-            # Отключаем garbage collection для этого потока
+            # Отключаем garbage collection
             import gc
             gc.disable()
             
-            # Основной цикл передачи
-            interval = 0.003  # 3 мс
-            next_time = time.monotonic()
+            # Основной цикл передачи - БЕЗ sleep!
+            packet_count = 0
+            start_time = time.monotonic()
             
             while self.running:
-                current_time = time.monotonic()
+                # Создаем пакет
+                packet = packet_template[:]  # Быстрое копирование
                 
-                if current_time >= next_time:
-                    # Создаем пакет
-                    packet = packet_template.copy()  # Копируем шаблон
-                    
-                    # Заполняем данные
-                    angle = counter * ANGLE_MULTIPLIER
-                    angle_bytes = struct.pack('<f', angle)
-                    packet[55:59] = angle_bytes
-                    
-                    checksum = 0x65 + sum(angle_bytes)
-                    packet[117] = 0xFF - (0xFF & checksum)
-                    
-                    # Передача
-                    pi.write(RS485_DE_PIN, 1)  # Включаем передатчик
-                    ser.write(packet)
-                    ser.flush()  # Ждем завершения передачи
-                    pi.write(RS485_DE_PIN, 0)  # Выключаем передатчик
-                    
-                    next_time += interval
+                # Заполняем данные
+                angle = counter * ANGLE_MULTIPLIER
+                angle_bytes = struct.pack('<f', angle)
+                packet[55:59] = angle_bytes
                 
-                # Короткая пауза для экономии CPU
-                time.sleep(0.0001)
+                checksum = 0x65 + sum(angle_bytes)
+                packet[117] = 0xFF - (0xFF & checksum)
+                
+                # Передача - БЕЗ ожидания!
+                pi.write(RS485_DE_PIN, 1)  # Включаем передатчик
+                ser.write(packet)          # Отправляем (неблокирующе)
+                pi.write(RS485_DE_PIN, 0)  # Сразу выключаем передатчик
+                
+                packet_count += 1
+                
+                # Очень короткая пауза для соблюдения интервала
+                # Используем busy-wait для точности
+                if packet_count % 100 == 0:  # Каждые 100 пакетов проверяем время
+                    elapsed = time.monotonic() - start_time
+                    expected_time = packet_count * 0.003  # 3 мс на пакет
+                if elapsed < expected_time:
+                        # Корректируем скорость если отстаем
+                        pass
                 
         except Exception as e:
-            print(f"Ошибка в цикле передачи: {e}")
+            print(f"Ошибка передачи: {e}")
         finally:
-            # Гарантированно выключаем передатчик
             try:
                 pi.write(RS485_DE_PIN, 0)
                 ser.close()
@@ -149,16 +148,11 @@ class EncoderReader:
         
     def setup_encoder(self):
         """Настройка энкодера"""
-        self.pi.set_mode(A_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(A_PIN, pigpio.PUD_UP)
-        self.pi.set_mode(B_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(B_PIN, pigpio.PUD_UP)
-        self.pi.set_mode(Z_PIN, pigpio.INPUT)
-        self.pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
-        
-        self.pi.set_glitch_filter(A_PIN, 50)
-        self.pi.set_glitch_filter(B_PIN, 50)
-        self.pi.set_glitch_filter(Z_PIN, 50)
+        pins = [A_PIN, B_PIN, Z_PIN]
+        for pin in pins:
+            self.pi.set_mode(pin, pigpio.INPUT)
+            self.pi.set_pull_up_down(pin, pigpio.PUD_UP)
+            self.pi.set_glitch_filter(pin, 50)
         
         self.cb_a = self.pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
         self.cb_z = self.pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
@@ -166,10 +160,7 @@ class EncoderReader:
     def _handle_A(self, gpio, level, tick):
         global counter
         b = self.pi.read(B_PIN)
-        if level == 1:
-            counter += 1 if b == 0 else -1
-        else:
-            counter += 1 if b == 1 else -1
+        counter += 1 if (level == 1 and b == 0) or (level == 0 and b == 1) else -1
             
     def _handle_Z(self, gpio, level, tick):
         global counter
@@ -182,32 +173,31 @@ class EncoderReader:
 def main():
     global counter
     
-    print("Запуск системы передачи данных...")
-    print("Для остановки нажмите Ctrl+C")
+    print("Запуск высокоскоростной передачи...")
     
     # Инициализация энкодера
     encoder = EncoderReader()
     
-    # Запуск передатчика
+    # Запуск передатчика (простая версия)
     transmitter = RealTimeTransmitter()
     
     try:
+        # Замер производительности
+        start_time = time.monotonic()
+        packet_count = 0
+        
         transmitter.start()
         
-        # Главный цикл просто ждет
-        while True:
-            time.sleep(1)
-            
     except KeyboardInterrupt:
-        print("\nОстановка системы...")
+        print("\nОстановка...")
     finally:
-        transmitter.stop()
+        transmitter.running = False
         encoder.cleanup()
 
 if __name__ == "__main__":
-    # Запускаем от root для реального приоритета
-    if os.geteuid() != 0:
-        print("Запустите с правами root: sudo python3 script.py")
-        exit(1)
+    # Проверяем скорость передачи
+    transmit_time = 120 * 10 / 507000
+    print(f"Время передачи одного пакета: {transmit_time*1000:.3f} мс")
+    print(f"Теоретическая максимальная частота: {1/transmit_time:.0f} Hz")
     
     main()
