@@ -127,6 +127,9 @@ class RS485Transmitter:
             self._serial_port.reset_input_buffer()
             self._serial_port.reset_output_buffer()
 
+            # Включаем передачу
+            self._pi.write(self._rs485_de_pin, 1)
+
             self._running = True
 
         except Exception as e:
