@@ -132,6 +132,12 @@ class RS485Transmitter:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
     
+    def precise_sleep(duration):
+        """Точная пауза с использованием time.monotonic()"""
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            pass
+
     def send_packet(self, counter_value):
         """Отправка пакета с минимальными операциями"""
         if not self.running:
@@ -164,7 +170,7 @@ class RS485Transmitter:
             
             # Отключаем передачу
             self.pi.write(RS485_DE_PIN, 0)
-            time.sleep(0.0023)
+            self.precise_sleep(0.0003)
             return True
         except Exception as e:
             # В случае ошибки отключаем передачу
