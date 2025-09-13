@@ -31,8 +31,8 @@ angle_rad = 0.0
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 
 class EncoderReader:
-    def __init__(self, a_pin, b_pin, z_pin):
-        self._pi = None
+    def __init__(self, pigpio, a_pin, b_pin, z_pin):
+        self._pi = pigpio
         self._cb_a = None
         self._cb_z = None
         self._running = False
@@ -42,7 +42,6 @@ class EncoderReader:
 
     def start(self):
         global counter
-        self._pi = pigpio.pi()
         if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
 
@@ -93,13 +92,14 @@ class EncoderReader:
             counter = 0
 
 class RS485Transmitter:
-    def __init__(self, device, baudrate, rs485_de_pin):
+    def __init__(self, pigpio, device, baudrate, rs485_de_pin):
         self._device = device
         self._baudrate = baudrate
         self._serial_port = None
-        self._pi = None
+        self._pi = pigpio
         self._running = False
         self._rs485_de_pin = rs485_de_pin
+        
         #Создаем пакет
         self._packet = bytearray(120)
         self._packet[0] = 0x65
@@ -108,7 +108,6 @@ class RS485Transmitter:
 
     def start(self):
         try:
-            self._pi = pigpio.pi()
             if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
 
@@ -127,6 +126,9 @@ class RS485Transmitter:
 
             self._serial_port.reset_input_buffer()
             self._serial_port.reset_output_buffer()
+
+            # Включаем передачу
+            self._pi.write(self._rs485_de_pin, 1)
 
             self._running = True
 
@@ -148,33 +150,20 @@ class RS485Transmitter:
 
         try:
 
-            # Создаем пакет динамически для точного угла
-            #packet = bytearray(120)
-            #packet[0] = 0x65
-            #packet[118] = 0x45
-            #packet[119] = 0xCF
-
             # Вычисляем точный угол на основе счетчика
             angle = counter_value * ANGLE_MULTIPLIER
-            angle_bytes = struct.pack('<f', angle)
-            self._packet[55:59] = angle_bytes
+            #angle_bytes = struct.pack('<f', angle)
+            self._packet[55:59] = struct.pack('<f', angle)
 
             # Контрольная сумма
-            checksum = 0x65 + sum(angle_bytes)
+            checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
-
-            # Включаем передачу
-            self._pi.write(self._rs485_de_pin, 1)
-
-            # Очищаем буферы перед отправкой
-            self._serial_port.reset_output_buffer()
 
             # Отправляем пакет
             self._serial_port.write(self._packet)
+            
+            # Делаем небольшую задержку
             time.sleep(0.0023)
-
-            # Отключаем передачу
-            self._pi.write(self._rs485_de_pin, 0)
 
             return True
         except Exception as e:
@@ -193,9 +182,11 @@ def main():
         os.nice(-20)  # Максимальный приоритет
     except:
         pass
+
+    pi_instance = pigpio.pi()
     
     # Инициализация энкодера
-    encoder = EncoderReader(a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
+    encoder = EncoderReader(pigpio=pi_instance, a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
     try:
         encoder.start()
     except Exception as e:
@@ -203,7 +194,7 @@ def main():
         return
     
     # Инициализация RS-485
-    rs485 = RS485Transmitter(UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
+    rs485 = RS485Transmitter(pi_instance, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
     try:
         rs485.start()
     except Exception as e:
