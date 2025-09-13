@@ -161,15 +161,9 @@ class RS485Transmitter:
             checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
-            # Включаем передачу
-            self._pi.write(self._rs485_de_pin, 1)
-
             # Отправляем пакет
             self._serial_port.write(self._packet)
             time.sleep(0.0023)
-
-            # Отключаем передачу
-            self._pi.write(self._rs485_de_pin, 0)
 
             return True
         except Exception as e:
