@@ -17,7 +17,7 @@ B_PIN = 22
 Z_PIN = 27
 
 # Настройка пинов RS-485
-RS485_DE_PIN = 23
+RS485_DE_PIN = 24
 
 PPR = 20
 UART_DEVICE = '/dev/serial0'
