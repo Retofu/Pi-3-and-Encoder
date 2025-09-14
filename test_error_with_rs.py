@@ -422,7 +422,7 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,  # Минимальный timeout как в rs.py
-                write_timeout=0.010,  # 10мс - с запасом для передачи 120 байт
+                write_timeout=0.001,  # 1мс как в rs.py
                 xonxoff=False,  # Отключаем XON/XOFF flow control
                 rtscts=False,   # Отключаем RTS/CTS flow control
                 dsrdtr=False    # Отключаем DSR/DTR flow control
@@ -517,6 +517,11 @@ class RS485Transmitter:
             
             # Простая задержка как в rs.py
             time.sleep(0.0023)
+            
+            # Проверяем, что UART буфер пуст (как в оригинальной версии)
+            if self.serial_port.out_waiting > 0:
+                # Если буфер не пуст, ждем еще немного
+                time.sleep(0.001)
             
             return True
             
