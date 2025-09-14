@@ -424,9 +424,9 @@ class RS485Transmitter:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.01,  # Увеличиваем timeout для стабильности
-                write_timeout=0.01,  # Увеличиваем write_timeout для стабильности
-                inter_byte_timeout=0.01,  # Увеличиваем inter_byte_timeout
+                timeout=0.05,  # 50мс timeout для чтения
+                write_timeout=0.05,  # 50мс write_timeout - достаточно для передачи 120 байт
+                inter_byte_timeout=0.05,  # 50мс inter_byte_timeout
                 xonxoff=False,  # Отключаем XON/XOFF flow control
                 rtscts=False,   # Отключаем RTS/CTS flow control
                 dsrdtr=False    # Отключаем DSR/DTR flow control
@@ -527,21 +527,15 @@ class RS485Transmitter:
                 logger.error(f"Записано {bytes_written} из {len(self.packet)} байт")
                 return False
                 
-            # Динамическое ожидание завершения передачи
-            # Начинаем с минимального времени и увеличиваем при необходимости
-            base_transmission_time = 0.0024  # 2.4мс базовое время
-            max_wait_time = 0.010  # 10мс максимум ожидания
-            start_time = time.perf_counter()
+            # Правильное ожидание завершения передачи
+            # Время передачи 120 байт при 507000 бод: (120 * 10) / 507000 = 2.37мс
+            # Добавляем запас 50% для надежности
+            transmission_time = 0.0036  # 3.6мс - достаточно для передачи
             
-            # Ждем базовое время
-            while time.perf_counter() - start_time < base_transmission_time:
+            # Ждем завершения передачи
+            start_time = time.perf_counter()
+            while time.perf_counter() - start_time < transmission_time:
                 pass
-                
-            # Проверяем, освободился ли UART буфер
-            wait_start = time.perf_counter()
-            while (self.serial_port.out_waiting > 0 and 
-                   time.perf_counter() - wait_start < max_wait_time):
-                time.sleep(0.0001)  # 100мкс пауза
                 
             # Принудительно ждем завершения передачи
             self.serial_port.flush()
@@ -672,10 +666,12 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 if rs485_transmitter.send_packet():
                     packet_count += 1
                     consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
-                    # Сбрасываем счетчики восстановления при успешной работе
-                    if recovery_mode and actual_cycle_time < 0.005:  # Если цикл стал нормальным
+                    # Сбрасываем счетчики восстановления только при полном восстановлении
+                    if recovery_mode and actual_cycle_time < 0.005 and target_cycle_time <= 0.00265:  # Если цикл стал нормальным И целевое время нормальное
+                        recovery_mode = False
                         recovery_attempts = 0
                         uart_reinit_count = 0  # Сбрасываем счетчик переинициализаций
+                        logger.info("Полное восстановление - возврат к нормальному режиму")
                 else:
                     error_count += 1
                     consecutive_errors += 1
@@ -707,7 +703,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 logger.warning(f"НЕМЕДЛЕННОЕ ВОССТАНОВЛЕНИЕ: цикл {actual_cycle_time*1000:.1f}мс слишком большой")
                 logger.warning(f"ДИАГНОСТИКА: target_cycle_time={target_cycle_time*1000:.1f}мс, pause_time={pause_time*1000:.1f}мс, actual_pause={actual_pause*1000:.1f}мс")
                 recovery_mode = True
-                recovery_attempts = 0  # Сбрасываем счетчик попыток восстановления
+                recovery_attempts = 0  # НЕ сбрасываем счетчик - это новая попытка восстановления
                 consecutive_errors = 0
                 target_cycle_time = 0.010  # 10мс для восстановления
                 actual_cycle_time = target_cycle_time
@@ -786,6 +782,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             if "Write timeout" in str(e):
                 uart_reinit_count += 1
                 logger.error(f"Write timeout - попытка восстановления UART ({uart_reinit_count}/{max_uart_reinit})")
+                logger.error(f"ДИАГНОСТИКА UART: out_waiting={rs485_transmitter.serial_port.out_waiting if rs485_transmitter.serial_port else 'N/A'}, timeout={rs485_transmitter.serial_port.timeout if rs485_transmitter.serial_port else 'N/A'}, write_timeout={rs485_transmitter.serial_port.write_timeout if rs485_transmitter.serial_port else 'N/A'}")
                 
                 # Проверяем, не превышено ли максимальное количество переинициализаций
                 if uart_reinit_count <= max_uart_reinit:
