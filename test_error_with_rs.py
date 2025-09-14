@@ -424,9 +424,9 @@ class RS485Transmitter:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.001,  # Уменьшаем timeout для более быстрой реакции
-                write_timeout=0.001,  # Уменьшаем write_timeout
-                inter_byte_timeout=0.001,  # Добавляем inter_byte_timeout
+                timeout=0.01,  # Увеличиваем timeout для стабильности
+                write_timeout=0.01,  # Увеличиваем write_timeout для стабильности
+                inter_byte_timeout=0.01,  # Увеличиваем inter_byte_timeout
                 xonxoff=False,  # Отключаем XON/XOFF flow control
                 rtscts=False,   # Отключаем RTS/CTS flow control
                 dsrdtr=False    # Отключаем DSR/DTR flow control
@@ -522,10 +522,9 @@ class RS485Transmitter:
                 return False
                 
             # Если буфер переполнен, принудительно очищаем его
-            if self.serial_port.out_waiting > 0:
-                logger.warning(f"UART буфер не пуст: {self.serial_port.out_waiting} байт, принудительно очищаем")
+            if self.serial_port.out_waiting > Rs485Config.PACKET_SIZE:
+                logger.warning(f"UART буфер переполнен: {self.serial_port.out_waiting} байт, принудительно очищаем")
                 self.serial_port.reset_output_buffer()
-                time.sleep(0.0001)  # Короткая пауза после очистки
                 
             # Отправляем данные
             bytes_written = self.serial_port.write(self.packet)
@@ -533,8 +532,8 @@ class RS485Transmitter:
                 logger.error(f"Записано {bytes_written} из {len(self.packet)} байт")
                 return False
                 
-            # Немедленно принудительно ждем завершения передачи
-            self.serial_port.flush()
+            # НЕ вызываем flush() в основном цикле - это блокирует выполнение
+            # flush() будет вызываться периодически в фоновом режиме
             
             return True
             
@@ -623,7 +622,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     packet_count = 0
     error_count = 0
     last_log_time = time.time()
-    last_cleanup_time = time.time()
+    last_flush_time = time.time()
+    last_packet_time = time.perf_counter()
     
     while True:
         try:
@@ -649,24 +649,33 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             else:
                 error_count += 1
             
-            # Правильная задержка 130мкс между пакетами (как требовалось)
-            time.sleep(0.00013)  # 130мкс задержка между пакетами
+            # Точная задержка 250мкс между пакетами (как требовалось)
+            # Используем более точный метод для микросекундных задержек
+            start_time = time.perf_counter()
+            while time.perf_counter() - start_time < 0.00025:  # 250мкс
+                pass
             
-            # Периодическая принудительная очистка UART буферов (каждые 5 секунд)
+            # Периодический flush() каждые 100мс для принудительной отправки данных
             current_time = time.time()
-            if current_time - last_cleanup_time >= 5:
-                if rs485_transmitter.serial_port and rs485_transmitter.serial_port.out_waiting > 0:
-                    logger.warning(f"Принудительная очистка UART буфера: {rs485_transmitter.serial_port.out_waiting} байт")
-                    rs485_transmitter.serial_port.reset_output_buffer()
-                last_cleanup_time = current_time
+            if current_time - last_flush_time >= 0.1:  # 100мс
+                try:
+                    if rs485_transmitter.serial_port:
+                        rs485_transmitter.serial_port.flush()
+                except Exception as e:
+                    logger.error(f"Ошибка flush UART: {e}")
+                last_flush_time = current_time
             
             # Логирование статистики каждые 10 секунд
             if current_time - last_log_time >= 10:
                 uart_waiting = rs485_transmitter.serial_port.out_waiting if rs485_transmitter.serial_port else 0
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт")
+                # Вычисляем среднее время между пакетами
+                current_packet_time = time.perf_counter()
+                avg_interval = (current_packet_time - last_packet_time) / packet_count if packet_count > 0 else 0
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, интервал: {avg_interval*1000:.1f}мс")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
+                last_packet_time = current_packet_time
             
         except Exception as e:
             error_count += 1
