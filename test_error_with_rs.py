@@ -696,8 +696,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             actual_cycle_time = time.perf_counter() - cycle_start
             
             # Постепенное восстановление нормального тайминга после ошибок
-            if recovery_mode and consecutive_errors == 0:
-                # Если мы в режиме восстановления и нет ошибок, постепенно уменьшаем время цикла
+            if recovery_mode:
+                # Если мы в режиме восстановления, постепенно уменьшаем время цикла
                 if target_cycle_time > 0.00265:  # Если больше нормального времени
                     target_cycle_time = max(0.00265, target_cycle_time * 0.9)  # Уменьшаем на 10%
                     logger.info(f"Восстановление: новое целевое время цикла {target_cycle_time*1000:.1f}мс")
@@ -734,10 +734,11 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             consecutive_errors += 1
             logger.error(f"Ошибка в задаче RS-485: {e}")
             
-            # Проверяем, нужно ли перейти в режим восстановления
-            if consecutive_errors >= max_consecutive_errors:
+            # Немедленный переход в режим восстановления при Write timeout
+            if "Write timeout" in str(e):
                 recovery_mode = True
-                logger.warning(f"Переход в режим восстановления после {consecutive_errors} ошибок подряд")
+                consecutive_errors = 0  # Сбрасываем счетчик для немедленного восстановления
+                logger.warning("Write timeout - немедленный переход в режим восстановления")
                 
                 # Сбрасываем UART буферы
                 try:
@@ -751,11 +752,31 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 target_cycle_time = 0.010  # 10мс для восстановления
                 actual_cycle_time = target_cycle_time
                 
-            # При Write timeout ошибке делаем более длинную паузу
-            if "Write timeout" in str(e):
-                logger.warning("Write timeout - увеличиваем паузу для восстановления")
+                # Принудительно сбрасываем адаптивное время
+                logger.info("Сброс адаптивного тайминга - переход в режим восстановления")
+                
                 time.sleep(0.01)  # 10мс пауза при timeout
             else:
+                # Проверяем, нужно ли перейти в режим восстановления для других ошибок
+                if consecutive_errors >= max_consecutive_errors:
+                    recovery_mode = True
+                    logger.warning(f"Переход в режим восстановления после {consecutive_errors} ошибок подряд")
+                    
+                    # Сбрасываем UART буферы
+                    try:
+                        if rs485_transmitter.serial_port:
+                            rs485_transmitter.serial_port.reset_output_buffer()
+                            rs485_transmitter.serial_port.flush()
+                    except:
+                        pass
+                    
+                    # Увеличиваем целевое время цикла для восстановления
+                    target_cycle_time = 0.010  # 10мс для восстановления
+                    actual_cycle_time = target_cycle_time
+                    
+                    # Принудительно сбрасываем адаптивное время
+                    logger.info("Сброс адаптивного тайминга - переход в режим восстановления")
+                    
                 time.sleep(0.001)  # 1мс пауза при других ошибках
 
 async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStore):
