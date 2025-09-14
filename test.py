@@ -12,6 +12,7 @@ import os
 import struct
 import threading
 import time
+import ctypes
 from typing import Optional, Dict, Any
 
 import pigpio
@@ -199,6 +200,17 @@ class DataChangeTracker:
     def is_dirty(self) -> bool:
         """Проверить, изменились ли данные"""
         return self.dirty
+
+# ============================================================================
+# ФУНКЦИИ ДЛЯ ТОЧНОЙ ЗАДЕРЖКИ
+# ============================================================================
+
+def usleep(microseconds):
+    """Точная задержка в микросекундах"""
+    if os.name == 'nt':  # Windows
+        ctypes.windll.kernel32.Sleep(int(microseconds / 1000))
+    else:  # Linux/Unix
+        ctypes.CDLL('libc.so.6').usleep(microseconds)
 
 # ============================================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И НАСТРОЙКИ
@@ -578,8 +590,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Отправляем пакет ВСЕГДА (симплексный режим)
             rs485_transmitter.send_packet()
             
-            # Пауза между пакетами (минимум 1мс из-за ограничений ОС)
-            time.sleep(0.001)  # 1мс
+            # Пауза между пакетами
+            time.sleep(0.0002)  # 200мкс
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
