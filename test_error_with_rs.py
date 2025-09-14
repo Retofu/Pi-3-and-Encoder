@@ -3,6 +3,7 @@
 Raspberry Pi 3 Encoder + Modbus Server + RS-485 Transmitter
 Асинхронная версия с управлением GPIO25 для питания 27В
 Симплексный режим RS-485 (постоянная передача)
+ИСПРАВЛЕННАЯ ВЕРСИЯ - устранены проблемы с синхронизацией и таймингом
 """
 
 import asyncio
@@ -49,15 +50,15 @@ class ModbusConfig:
 # Константы для RS-485 пакета
 class Rs485Config:
     """Конфигурация RS-485 пакета"""
-    PACKET_SIZE = 120
+    PACKET_SIZE = 120  # Размер пакета: 120 байт (индексы 0-119)
     ANGLE_BYTE_START = 55  # Байты 56-59 (индекс 55-58)
     STATUS_BYTE_START = 80 # Байты 81-82 (индекс 80-81)
-    CHECKSUM_BYTE = 117    # Байт 117 (индекс 117)
+    CHECKSUM_BYTE = 117    # Байт 118 (индекс 117)
     
-    # Постоянные байты пакета
-    HEADER_BYTE_0 = 0x65   # Байт 0
-    HEADER_BYTE_118 = 0x45 # Байт 118
-    HEADER_BYTE_119 = 0xCF # Байт 119
+    # Постоянные байты пакета (исправлены индексы)
+    HEADER_BYTE_0 = 0x65   # Байт 1 (индекс 0)
+    HEADER_BYTE_118 = 0x45 # Байт 119 (индекс 118)
+    HEADER_BYTE_119 = 0xCF # Байт 120 (индекс 119)
 
 # Адреса Modbus регистров
 class ModbusRegisters:
@@ -216,7 +217,9 @@ def usleep(microseconds):
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И НАСТРОЙКИ
 # ============================================================================
 
+# Глобальные переменные с синхронизацией
 counter = 0
+counter_lock = threading.Lock()  # Блокировка для безопасного доступа к counter
 power_27v_enabled = False
 
 # Настройка логирования
@@ -369,18 +372,22 @@ class EncoderReader:
             a = self.pi.read(self.a_pin)
             b = self.pi.read(self.b_pin)
 
-            if level == 1:
-                counter += 1 if b == 0 else -1
-            else:
-                counter += 1 if b == 1 else -1
-        except:
-            pass
+            # Безопасное изменение counter с блокировкой
+            with counter_lock:
+                if level == 1:
+                    counter += 1 if b == 0 else -1
+                else:
+                    counter += 1 if b == 1 else -1
+        except Exception as e:
+            logger.error(f"Ошибка в обработчике фазы A: {e}")
 
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
         global counter
         if level == 1 and self.running:
-            counter = 0
+            # Безопасное сброса counter с блокировкой
+            with counter_lock:
+                counter = 0
 
 class RS485Transmitter:
     """Класс для передачи данных по RS-485 в симплексном режиме"""
@@ -458,52 +465,64 @@ class RS485Transmitter:
     
     def prepare_packet(self, angle_encoder_deg: float) -> bool:
         """Подготовка пакета - всегда обновляем угол энкодера"""
-        # В симплексном режиме всегда обновляем угол энкодера
-        # Вычисляем угол крена
-        angle_roll = self.calculate_angle_roll(
-            angle_encoder_deg, 
-            self.change_tracker.last_angle_offset
-        )
-        
-        # Заполняем байты 56-59 - угол в радианах
-        angle_bytes = struct.pack('<f', angle_roll)
-        self.packet[Rs485Config.ANGLE_BYTE_START:Rs485Config.ANGLE_BYTE_START+4] = angle_bytes
-        
-        # Обновляем статусное слово только если параметры изменились
-        if self.change_tracker.is_dirty():
-            # Заполняем байты 81-82 - статусное слово
-            status_bytes = struct.pack('<H', self.change_tracker.last_status_word)
-            self.packet[Rs485Config.STATUS_BYTE_START:Rs485Config.STATUS_BYTE_START+2] = status_bytes
-            self.change_tracker.mark_clean()
-        
-        # Вычисляем и устанавливаем контрольную сумму
-        checksum = self.calculate_checksum()
-        self.packet[Rs485Config.CHECKSUM_BYTE] = checksum
-        
-        return True
+        try:
+            # Проверяем валидность данных
+            if not isinstance(angle_encoder_deg, (int, float)):
+                logger.error(f"Некорректный угол энкодера: {angle_encoder_deg}")
+                return False
+                
+            # Ограничиваем угол
+            angle_encoder_deg = angle_encoder_deg % 360.0
+            
+            # В симплексном режиме всегда обновляем угол энкодера
+            # Вычисляем угол крена
+            angle_roll = self.calculate_angle_roll(
+                angle_encoder_deg, 
+                self.change_tracker.last_angle_offset
+            )
+            
+            # Заполняем байты 56-59 - угол в радианах
+            angle_bytes = struct.pack('<f', angle_roll)
+            self.packet[Rs485Config.ANGLE_BYTE_START:Rs485Config.ANGLE_BYTE_START+4] = angle_bytes
+            
+            # Обновляем статусное слово только если параметры изменились
+            if self.change_tracker.is_dirty():
+                # Заполняем байты 81-82 - статусное слово
+                status_bytes = struct.pack('<H', self.change_tracker.last_status_word)
+                self.packet[Rs485Config.STATUS_BYTE_START:Rs485Config.STATUS_BYTE_START+2] = status_bytes
+                self.change_tracker.mark_clean()
+            
+            # Вычисляем и устанавливаем контрольную сумму
+            checksum = self.calculate_checksum()
+            self.packet[Rs485Config.CHECKSUM_BYTE] = checksum
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка подготовки пакета: {e}")
+            return False
     
     def send_packet(self):
-        """Отправка подготовленного пакета с контролем буфера"""
+        """Отправка подготовленного пакета (без переключения направления!)"""
         if not self.running or not self.serial_port:
             return False
 
         try:
-            # Проверяем, не переполнен ли буфер передачи
-            if self.serial_port.out_waiting > len(self.packet) * 2:
-                logger.warning("Буфер передачи переполнен, очищаем...")
-                self.serial_port.reset_output_buffer()
-            
+            # Проверяем, что буфер не переполнен
+            if self.serial_port.out_waiting > 0:
+                logger.warning("UART буфер не пуст, пропускаем пакет")
+                return False
+                
             # Отправляем данные
             bytes_written = self.serial_port.write(self.packet)
-            
-            # Принудительно сбрасываем буфер для немедленной отправки
-            self.serial_port.flush()
-            
-            return bytes_written == len(self.packet)
+            if bytes_written != len(self.packet):
+                logger.error(f"Записано {bytes_written} из {len(self.packet)} байт")
+                return False
                 
-        except serial.SerialTimeoutException:
-            logger.warning("Таймаут отправки RS-485 пакета")
-            return False
+            # Ждем завершения передачи
+            self.serial_port.flush()
+            return True
+            
         except Exception as e:
             logger.error(f"Ошибка отправки пакета RS-485: {e}")
             return False
@@ -582,38 +601,53 @@ async def parameter_update_task(data_store: ModbusDataStore, rs485_transmitter: 
             logger.error(f"Ошибка в задаче обновления параметров: {e}")
             await asyncio.sleep(1)
 
-async def rs485_transmission_task(rs485_transmitter: RS485Transmitter, data_store: ModbusDataStore):
-    """Асинхронная задача передачи данных по RS-485"""
+def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
+    """Задача передачи данных по RS-485 в симплексном режиме"""
     global counter
     
-    # Точный интервал между пакетами (2.5ms = 400Hz)
-    PACKET_INTERVAL = 0.0025
+    packet_count = 0
+    error_count = 0
+    last_log_time = time.time()
     
     while True:
         try:
-            # Получаем текущий PPR
+            # Получаем текущий PPR из трекера
             ppr = rs485_transmitter.change_tracker.last_ppr
             if ppr == 0:
                 ppr = 360
                 
-            # Вычисляем угол энкодера
-            angle_encoder_deg = (counter % ppr) * (360.0 / ppr)
+            # Безопасное чтение counter с блокировкой
+            with counter_lock:
+                current_counter = counter
+                
+            # Вычисляем угол энкодера в каждом цикле (для симплексного режима)
+            angle_encoder_deg = (current_counter % ppr) * (360.0 / ppr)
             
-            # Подготавливаем пакет
-            rs485_transmitter.prepare_packet(angle_encoder_deg)
+            # Подготавливаем пакет (всегда обновляем угол)
+            if rs485_transmitter.prepare_packet(angle_encoder_deg):
+                # Отправляем пакет ВСЕГДА (симплексный режим)
+                if rs485_transmitter.send_packet():
+                    packet_count += 1
+                else:
+                    error_count += 1
+            else:
+                error_count += 1
             
-            # Отправляем пакет
-            success = rs485_transmitter.send_packet()
+            # Правильная задержка 130мкс (0.00013 секунды)
+            time.sleep(0.00013)  # 130мкс
             
-            if not success:
-                logger.warning("Ошибка отправки RS-485 пакета")
-            
-            # Точная задержка с использованием asyncio
-            await asyncio.sleep(PACKET_INTERVAL)
+            # Логирование статистики каждые 10 секунд
+            current_time = time.time()
+            if current_time - last_log_time >= 10:
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок")
+                packet_count = 0
+                error_count = 0
+                last_log_time = current_time
             
         except Exception as e:
+            error_count += 1
             logger.error(f"Ошибка в задаче RS-485: {e}")
-            await asyncio.sleep(0.1)
+            time.sleep(0.001)  # Короткая пауза при ошибке
 
 async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStore):
     """Задача обновления данных энкодера в Modbus регистрах"""
@@ -626,11 +660,15 @@ async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStor
             if ppr == 0:
                 ppr = 360  # Значение по умолчанию
             
-            angle_rad = (counter % ppr) * (2 * math.pi / ppr)
+            # Безопасное чтение counter с блокировкой
+            with counter_lock:
+                current_counter = counter
+            
+            angle_rad = (current_counter % ppr) * (2 * math.pi / ppr)
             angle_deg = math.degrees(angle_rad)
             
             # Обновляем данные в Modbus регистрах
-            data_store.update_encoder_data(counter, angle_rad, angle_deg)
+            data_store.update_encoder_data(current_counter, angle_rad, angle_deg)
             
             await asyncio.sleep(0.1)  # Обновляем каждые 100мс
             
@@ -688,12 +726,15 @@ async def main():
         logger.info("Все системы инициализированы. Начинаем работу...")
         logger.info("Modbus сервер запущен. Клиент может подключаться для настройки параметров.")
         
-        # Запускаем все асинхронные задачи в одном event loop
+        # Запускаем RS-485 задачу в отдельном потоке
+        rs485_thread = threading.Thread(target=rs485_transmission_task, args=(rs485_transmitter,), daemon=True)
+        rs485_thread.start()
+        
+        # Запускаем остальные асинхронные задачи
         tasks = [
             asyncio.create_task(power_control_task(power_controller, data_store)),
             asyncio.create_task(parameter_update_task(data_store, rs485_transmitter)),
-            asyncio.create_task(encoder_update_task(encoder, data_store)),
-            asyncio.create_task(rs485_transmission_task(rs485_transmitter, data_store))
+            asyncio.create_task(encoder_update_task(encoder, data_store))
         ]
         
         # Ждем завершения задач
