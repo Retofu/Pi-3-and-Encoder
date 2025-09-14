@@ -11,6 +11,7 @@ import math
 import os
 import struct
 import threading
+import time
 from typing import Optional, Dict, Any
 
 import pigpio
@@ -477,6 +478,7 @@ class RS485Transmitter:
         try:
             # ПРОСТО ОТПРАВЛЯЕМ ДАННЫЕ - НЕТ ПЕРЕКЛЮЧЕНИЯ НАПРАВЛЕНИЯ!
             self.serial_port.write(self.packet)
+            time.sleep(0.00025)
             return True
             
         except Exception as e:
