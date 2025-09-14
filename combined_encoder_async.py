@@ -42,6 +42,11 @@ REG_PPR = 6           # PPR энкодера (uint16, 1 регистр)
 # Предварительно вычисленные константы
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 
+# Глобальные переменные (как в оригинале)
+counter = 0
+angle_rad = 0.0
+angle_deg = 0.0
+
 class Endian:
     Big = 0
     Little = 1
@@ -70,31 +75,14 @@ class BinaryPayloadBuilder:
     def to_registers(self):
         return self.data
 
-class SharedData:
-    """Класс для безопасного обмена данными между потоками"""
-    def __init__(self):
-        self._lock = asyncio.Lock()
-        self._counter = 0
-        self._angle_rad = 0.0
-        self._angle_deg = 0.0
-        
-    def update_encoder_data(self, counter: int):
-        """Синхронное обновление данных энкодера"""
-        self._counter = counter
-        self._angle_rad = counter * ANGLE_MULTIPLIER
-        self._angle_deg = math.degrees(self._angle_rad)
-    
-    def get_encoder_data(self):
-        """Синхронное получение данных энкодера"""
-        return self._counter, self._angle_rad, self._angle_deg
+# Убираем класс SharedData - используем глобальные переменные как в оригинале
 
 class EncoderReader:
-    def __init__(self, shared_data: SharedData):
+    def __init__(self):
         self._pi = None
         self._cb_a = None
         self._cb_z = None
         self._running = False
-        self._shared_data = shared_data
 
     async def start(self):
         """Асинхронная инициализация энкодера"""
@@ -134,6 +122,7 @@ class EncoderReader:
 
     def _handle_A(self, gpio, level, tick):
         """Обработчик фазы A"""
+        global counter
         if level == pigpio.TIMEOUT or not self._running:
             return
 
@@ -141,29 +130,23 @@ class EncoderReader:
         b = self._pi.read(B_PIN)
 
         if level == 1:
-            self._shared_data._counter += 1 if b == 0 else -1
+            counter += 1 if b == 0 else -1
         else:
-            self._shared_data._counter += 1 if b == 1 else -1
+            counter += 1 if b == 1 else -1
 
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
+        global counter
         if level == 1 and self._running:
-            self._shared_data._counter = 0
-
-    def update_shared_data(self):
-        """Обновление общих данных"""
-        self._shared_data.update_encoder_data(self._shared_data._counter)
+            counter = 0
 
 class RS485Transmitter:
-    def __init__(self, shared_data: SharedData):
+    def __init__(self):
         self._device = UART_DEVICE
         self._baudrate = UART_BAUDRATE
         self._serial_port = None
         self._pi = None
         self._running = False
-        self._shared_data = shared_data
-        self._error_count = 0
-        self._max_errors = 10
         
         # Создаем пакет
         self._packet = bytearray(120)
@@ -230,8 +213,9 @@ class RS485Transmitter:
             print(f"Ошибка переподключения RS-485: {e}")
             return False
 
-    async def send_packet(self, counter_value: int):
-        """Асинхронная отправка пакета (упрощенная версия как в rs.py)"""
+    def send_packet(self, counter_value: int):
+        """Отправка пакета (точно как в rs.py)"""
+        global counter
         if not self._running:
             return False
 
@@ -244,11 +228,11 @@ class RS485Transmitter:
             checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
-            # Отправляем пакет (DE уже включен)
+            # Отправляем пакет
             self._serial_port.write(self._packet)
             
-            # Небольшая задержка (как в оригинале)
-            await asyncio.sleep(0.0023)
+            # Делаем небольшую задержку
+            time.sleep(0.0023)
 
             return True
         except Exception as e:
@@ -262,14 +246,17 @@ class RS485Transmitter:
 class ModbusDataStore:
     """Класс для обновления данных в ModBus регистрах"""
     
-    def __init__(self, hr_block, ir_block, shared_data: SharedData):
+    def __init__(self, hr_block, ir_block):
         self.hr_block = hr_block  # Holding Registers
         self.ir_block = ir_block  # Input Registers
-        self._shared_data = shared_data
         
-    async def update_registers(self):
-        """Асинхронное обновление регистров данными энкодера"""
-        counter, angle_rad, angle_deg = self._shared_data.get_encoder_data()
+    def update_registers(self):
+        """Обновление регистров данными энкодера"""
+        global counter, angle_rad, angle_deg
+        
+        # Расчет углов
+        angle_rad = (counter % PPR) * (2 * math.pi / PPR)
+        angle_deg = math.degrees(angle_rad)
         
         # Упаковка float32 в 2 регистра (big-endian)
         builder = BinaryPayloadBuilder(byteorder=Endian.Big, wordorder=Endian.Big)
@@ -297,7 +284,7 @@ class ModbusDataStore:
         self.ir_block.setValues(REG_COUNTER, counter_data)
         self.ir_block.setValues(REG_PPR, [PPR])
 
-def run_modbus_server(shared_data: SharedData):
+def run_modbus_server():
     """Запуск ModBus TCP сервера в отдельном потоке"""
     # Создание хранилища данных
     initial_values = [0] * 100
@@ -320,7 +307,7 @@ def run_modbus_server(shared_data: SharedData):
     # Создаем контекст сервера с указанием Device ID
     server_context = ModbusServerContext(devices={MODBUS_UNIT_ID: device_context}, single=False)
     
-    data_store = ModbusDataStore(hr_block, ir_block, shared_data)
+    data_store = ModbusDataStore(hr_block, ir_block)
     
     print(f"Запуск ModBus TCP сервера на порту {MODBUS_PORT}")
     print(f"Unit ID: {MODBUS_UNIT_ID}")
@@ -339,63 +326,63 @@ def run_modbus_server(shared_data: SharedData):
     
     return data_store
 
-async def encoder_task(shared_data: SharedData, pi_instance):
+async def encoder_task(pi_instance):
     """Задача для чтения энкодера"""
-    encoder = EncoderReader(shared_data)
+    encoder = EncoderReader()
     encoder._pi = pi_instance
     
     try:
         await encoder.start()
         
+        # Энкодер работает через прерывания, не нужен цикл
         while True:
-            encoder.update_shared_data()
-            await asyncio.sleep(0.001)  # Обновление каждую миллисекунду
+            await asyncio.sleep(1.0)  # Просто ждем
             
     except Exception as e:
         print(f"Ошибка в задаче энкодера: {e}")
     finally:
         encoder.stop()
 
-async def rs485_task(shared_data: SharedData, pi_instance):
-    """Задача для передачи RS-485 (упрощенная версия)"""
-    rs485 = RS485Transmitter(shared_data)
+async def rs485_task(pi_instance):
+    """Задача для передачи RS-485 (точно как в rs.py)"""
+    global counter
+    rs485 = RS485Transmitter()
     rs485._pi = pi_instance
     
     try:
         await rs485.start()
         
         while True:
-            try:
-                counter, _, _ = shared_data.get_encoder_data()
-                await rs485.send_packet(counter)
-                await asyncio.sleep(0.003)  # Отправка каждые 3мс
-                
-            except Exception as e:
-                print(f"Ошибка в цикле RS-485: {e}")
-                await asyncio.sleep(0.01)  # Задержка при ошибке
-                
+            # Отправляем пакет напрямую по счетчику (как в оригинале)
+            rs485.send_packet(counter)
+            # НЕТ ЗАДЕРЖЕК - максимальная скорость как в оригинале
+            
     except Exception as e:
         print(f"Критическая ошибка в задаче RS-485: {e}")
     finally:
         rs485.stop()
 
-async def modbus_task(shared_data: SharedData):
+async def modbus_task():
     """Задача для обновления ModBus регистров"""
-    data_store = run_modbus_server(shared_data)
+    data_store = run_modbus_server()
     
     try:
         while True:
-            await data_store.update_registers()
+            data_store.update_registers()
             await asyncio.sleep(0.1)  # Обновление каждые 100мс
             
     except Exception as e:
         print(f"Ошибка в задаче ModBus: {e}")
 
-async def status_task(shared_data: SharedData):
+async def status_task():
     """Задача для вывода статуса"""
+    global counter, angle_rad, angle_deg
     try:
         while True:
-            counter, angle_rad, angle_deg = shared_data.get_encoder_data()
+            # Расчет углов
+            angle_rad = (counter % PPR) * (2 * math.pi / PPR)
+            angle_deg = math.degrees(angle_rad)
+            
             print(f"Угол: {angle_rad:.3f} рад ({angle_deg:.1f}°), Счетчик: {counter}")
             await asyncio.sleep(1.0)  # Вывод каждую секунду
             
@@ -421,18 +408,15 @@ async def main():
     
     print("pigpio daemon подключен")
     
-    # Создаем общие данные
-    shared_data = SharedData()
-    
     # Создаем задачи
     tasks = []
     
     try:
         # Создаем задачи с обработкой исключений
-        encoder_task_obj = asyncio.create_task(encoder_task(shared_data, pi_instance))
-        rs485_task_obj = asyncio.create_task(rs485_task(shared_data, pi_instance))
-        modbus_task_obj = asyncio.create_task(modbus_task(shared_data))
-        status_task_obj = asyncio.create_task(status_task(shared_data))
+        encoder_task_obj = asyncio.create_task(encoder_task(pi_instance))
+        rs485_task_obj = asyncio.create_task(rs485_task(pi_instance))
+        modbus_task_obj = asyncio.create_task(modbus_task())
+        status_task_obj = asyncio.create_task(status_task())
         
         tasks = [encoder_task_obj, rs485_task_obj, modbus_task_obj, status_task_obj]
         
