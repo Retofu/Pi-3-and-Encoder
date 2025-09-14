@@ -644,6 +644,10 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     consecutive_errors = 0
     max_consecutive_errors = 3
     recovery_mode = False
+    recovery_attempts = 0
+    max_recovery_attempts = 10  # Максимум 10 попыток восстановления
+    uart_reinit_count = 0
+    max_uart_reinit = 3  # Максимум 3 переинициализации UART
     
     while True:
         try:
@@ -668,6 +672,10 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 if rs485_transmitter.send_packet():
                     packet_count += 1
                     consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
+                    # Сбрасываем счетчики восстановления при успешной работе
+                    if recovery_mode and actual_cycle_time < 0.005:  # Если цикл стал нормальным
+                        recovery_attempts = 0
+                        uart_reinit_count = 0  # Сбрасываем счетчик переинициализаций
                 else:
                     error_count += 1
                     consecutive_errors += 1
@@ -699,20 +707,30 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 logger.warning(f"НЕМЕДЛЕННОЕ ВОССТАНОВЛЕНИЕ: цикл {actual_cycle_time*1000:.1f}мс слишком большой")
                 logger.warning(f"ДИАГНОСТИКА: target_cycle_time={target_cycle_time*1000:.1f}мс, pause_time={pause_time*1000:.1f}мс, actual_pause={actual_pause*1000:.1f}мс")
                 recovery_mode = True
+                recovery_attempts = 0  # Сбрасываем счетчик попыток восстановления
                 consecutive_errors = 0
                 target_cycle_time = 0.010  # 10мс для восстановления
                 actual_cycle_time = target_cycle_time
             
             # Постепенное восстановление нормального тайминга после ошибок
             if recovery_mode and consecutive_errors == 0:
-                # Если мы в режиме восстановления и нет ошибок, постепенно уменьшаем время цикла
-                if target_cycle_time > 0.00265:  # Если больше нормального времени
+                recovery_attempts += 1
+                # Проверяем, не превышено ли максимальное количество попыток восстановления
+                if recovery_attempts > max_recovery_attempts:
+                    # Принудительно выходим из режима восстановления
+                    recovery_mode = False
+                    recovery_attempts = 0
+                    target_cycle_time = 0.00265
+                    actual_cycle_time = target_cycle_time
+                    logger.warning(f"Принудительный выход из режима восстановления после {max_recovery_attempts} попыток")
+                elif target_cycle_time > 0.00265:  # Если больше нормального времени
                     # Более агрессивное восстановление - уменьшаем на 20% вместо 10%
                     target_cycle_time = max(0.00265, target_cycle_time * 0.8)  # Уменьшаем на 20%
-                    logger.info(f"Восстановление: новое целевое время цикла {target_cycle_time*1000:.1f}мс")
+                    logger.info(f"Восстановление: новое целевое время цикла {target_cycle_time*1000:.1f}мс (попытка {recovery_attempts}/{max_recovery_attempts})")
                 else:
                     # Восстановление завершено
                     recovery_mode = False
+                    recovery_attempts = 0
                     target_cycle_time = 0.00265
                     actual_cycle_time = target_cycle_time
                     logger.info("Восстановление завершено - возврат к нормальному режиму")
@@ -722,6 +740,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             elif not recovery_mode and actual_cycle_time > 0.005:  # Если реальное время цикла слишком большое
                 logger.warning(f"Принудительное восстановление: реальное время цикла {actual_cycle_time*1000:.1f}мс слишком большое")
                 recovery_mode = True
+                recovery_attempts = 0
                 consecutive_errors = 0
                 target_cycle_time = 0.010  # 10мс для восстановления
                 actual_cycle_time = target_cycle_time
@@ -747,7 +766,12 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 if cycle_time > 0.010:  # Если цикл больше 10мс
                     logger.warning(f"АНОМАЛИЯ: цикл {cycle_time*1000:.1f}мс, частота {real_frequency:.1f} Гц, режим {recovery_status}")
                 
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}, {target_status}")
+                # Добавляем информацию о счетчиках восстановления
+                recovery_info = ""
+                if recovery_mode:
+                    recovery_info = f", попытки: {recovery_attempts}/{max_recovery_attempts}, UART переинициализации: {uart_reinit_count}/{max_uart_reinit}"
+                
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}, {target_status}{recovery_info}")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
@@ -760,23 +784,61 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             
             # Немедленный переход в режим восстановления при Write timeout
             if "Write timeout" in str(e):
-                recovery_mode = True
-                consecutive_errors = 0  # Сбрасываем счетчик для немедленного восстановления
-                logger.warning("Write timeout - немедленный переход в режим восстановления")
+                uart_reinit_count += 1
+                logger.error(f"Write timeout - попытка восстановления UART ({uart_reinit_count}/{max_uart_reinit})")
                 
-                # Сбрасываем UART буферы
-                try:
-                    if rs485_transmitter.serial_port:
-                        rs485_transmitter.serial_port.reset_output_buffer()
-                        rs485_transmitter.serial_port.flush()
-                except:
-                    pass
-                
-                # Увеличиваем целевое время цикла для восстановления
-                target_cycle_time = 0.010  # 10мс для восстановления
-                actual_cycle_time = target_cycle_time
-                
-                time.sleep(0.01)  # 10мс пауза при timeout
+                # Проверяем, не превышено ли максимальное количество переинициализаций
+                if uart_reinit_count <= max_uart_reinit:
+                    try:
+                        # Полная переинициализация UART
+                        logger.warning("Переинициализация UART соединения...")
+                        
+                        # Закрываем текущее соединение
+                        if rs485_transmitter.serial_port and rs485_transmitter.serial_port.is_open:
+                            rs485_transmitter.serial_port.close()
+                            time.sleep(0.1)  # Пауза для стабилизации
+                        
+                        # Переинициализируем UART
+                        rs485_transmitter.start()
+                        logger.info("UART успешно переинициализирован")
+                        
+                        # Сбрасываем счетчики восстановления
+                        recovery_mode = True
+                        recovery_attempts = 0
+                        consecutive_errors = 0
+                        target_cycle_time = 0.010  # 10мс для восстановления
+                        actual_cycle_time = target_cycle_time
+                        
+                        time.sleep(0.05)  # 50мс пауза после переинициализации
+                        
+                    except Exception as reinit_error:
+                        logger.error(f"Ошибка переинициализации UART: {reinit_error}")
+                        # Если переинициализация не удалась, переходим в обычный режим восстановления
+                        recovery_mode = True
+                        recovery_attempts = 0
+                        consecutive_errors = 0
+                        target_cycle_time = 0.010
+                        actual_cycle_time = target_cycle_time
+                        time.sleep(0.01)
+                else:
+                    # Превышено максимальное количество переинициализаций
+                    logger.error(f"Превышено максимальное количество переинициализаций UART ({max_uart_reinit})")
+                    logger.error("Переход в аварийный режим с увеличенными timeout")
+                    
+                    # Увеличиваем timeout для UART
+                    try:
+                        if rs485_transmitter.serial_port:
+                            rs485_transmitter.serial_port.timeout = 0.05  # 50мс
+                            rs485_transmitter.serial_port.write_timeout = 0.05  # 50мс
+                    except:
+                        pass
+                    
+                    recovery_mode = True
+                    recovery_attempts = 0
+                    consecutive_errors = 0
+                    target_cycle_time = 0.020  # 20мс для аварийного режима
+                    actual_cycle_time = target_cycle_time
+                    time.sleep(0.02)
             else:
                 # Проверяем, нужно ли перейти в режим восстановления для других ошибок
                 if consecutive_errors >= max_consecutive_errors:
