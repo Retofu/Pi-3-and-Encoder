@@ -558,7 +558,7 @@ async def parameter_update_task(data_store: ModbusDataStore, rs485_transmitter: 
             logger.error(f"Ошибка в задаче обновления параметров: {e}")
             await asyncio.sleep(1)
 
-async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
+def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     """Задача передачи данных по RS-485 в симплексном режиме"""
     global counter
     
@@ -579,17 +579,13 @@ async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             rs485_transmitter.send_packet()
             
             # Пауза 130мкс между пакетами
-            # Используем busy wait для точной задержки в микросекундах
             start_time = time.perf_counter()
             while time.perf_counter() - start_time < 0.00013:  # 130мкс
                 pass
             
-            # Небольшая асинхронная пауза чтобы не блокировать event loop
-            await asyncio.sleep(0)
-            
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
-            await asyncio.sleep(0.1)
+            time.sleep(0.1)
 
 async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStore):
     """Задача обновления данных энкодера в Modbus регистрах"""
@@ -664,11 +660,14 @@ async def main():
         logger.info("Все системы инициализированы. Начинаем работу...")
         logger.info("Modbus сервер запущен. Клиент может подключаться для настройки параметров.")
         
-        # Запускаем задачи параллельно
+        # Запускаем RS-485 задачу в отдельном потоке
+        rs485_thread = threading.Thread(target=rs485_transmission_task, args=(rs485_transmitter,), daemon=True)
+        rs485_thread.start()
+        
+        # Запускаем остальные асинхронные задачи
         tasks = [
             asyncio.create_task(power_control_task(power_controller, data_store)),
             asyncio.create_task(parameter_update_task(data_store, rs485_transmitter)),
-            asyncio.create_task(rs485_transmission_task(rs485_transmitter)),
             asyncio.create_task(encoder_update_task(encoder, data_store))
         ]
         
