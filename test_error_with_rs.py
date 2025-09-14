@@ -424,12 +424,20 @@ class RS485Transmitter:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.01,
-                write_timeout=0.01
+                timeout=0.001,  # Уменьшаем timeout для более быстрой реакции
+                write_timeout=0.001,  # Уменьшаем write_timeout
+                inter_byte_timeout=0.001,  # Добавляем inter_byte_timeout
+                xonxoff=False,  # Отключаем XON/XOFF flow control
+                rtscts=False,   # Отключаем RTS/CTS flow control
+                dsrdtr=False    # Отключаем DSR/DTR flow control
             )
 
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
+            
+            # Дополнительная очистка буферов
+            self.serial_port.flush()
+            time.sleep(0.01)  # Даем время на очистку
             
             self.running = True
             logger.info(f"RS-485 передатчик запущен в симплексном режиме на {self.device}")
@@ -508,10 +516,16 @@ class RS485Transmitter:
             return False
 
         try:
-            # Проверяем, что буфер не переполнен
-            if self.serial_port.out_waiting > 0:
-                logger.warning("UART буфер не пуст, пропускаем пакет")
+            # Проверяем размер пакета
+            if len(self.packet) != Rs485Config.PACKET_SIZE:
+                logger.error(f"Неправильный размер пакета: {len(self.packet)} байт, ожидается {Rs485Config.PACKET_SIZE}")
                 return False
+                
+            # Если буфер переполнен, принудительно очищаем его
+            if self.serial_port.out_waiting > 0:
+                logger.warning(f"UART буфер не пуст: {self.serial_port.out_waiting} байт, принудительно очищаем")
+                self.serial_port.reset_output_buffer()
+                time.sleep(0.0001)  # Короткая пауза после очистки
                 
             # Отправляем данные
             bytes_written = self.serial_port.write(self.packet)
@@ -519,8 +533,9 @@ class RS485Transmitter:
                 logger.error(f"Записано {bytes_written} из {len(self.packet)} байт")
                 return False
                 
-            # Ждем завершения передачи
+            # Немедленно принудительно ждем завершения передачи
             self.serial_port.flush()
+            
             return True
             
         except Exception as e:
@@ -608,6 +623,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     packet_count = 0
     error_count = 0
     last_log_time = time.time()
+    last_cleanup_time = time.time()
     
     while True:
         try:
@@ -633,13 +649,21 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             else:
                 error_count += 1
             
-            # Правильная задержка 130мкс (0.00013 секунды)
-            time.sleep(0.00013)  # 130мкс
+            # Правильная задержка 130мкс между пакетами (как требовалось)
+            time.sleep(0.00013)  # 130мкс задержка между пакетами
+            
+            # Периодическая принудительная очистка UART буферов (каждые 5 секунд)
+            current_time = time.time()
+            if current_time - last_cleanup_time >= 5:
+                if rs485_transmitter.serial_port and rs485_transmitter.serial_port.out_waiting > 0:
+                    logger.warning(f"Принудительная очистка UART буфера: {rs485_transmitter.serial_port.out_waiting} байт")
+                    rs485_transmitter.serial_port.reset_output_buffer()
+                last_cleanup_time = current_time
             
             # Логирование статистики каждые 10 секунд
-            current_time = time.time()
             if current_time - last_log_time >= 10:
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок")
+                uart_waiting = rs485_transmitter.serial_port.out_waiting if rs485_transmitter.serial_port else 0
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
