@@ -511,7 +511,7 @@ class RS485Transmitter:
             return False
     
     def send_packet(self):
-        """Отправка подготовленного пакета с ожиданием завершения передачи"""
+        """Отправка подготовленного пакета с динамическим ожиданием завершения"""
         if not self.running or not self.serial_port:
             return False
 
@@ -527,13 +527,21 @@ class RS485Transmitter:
                 logger.error(f"Записано {bytes_written} из {len(self.packet)} байт")
                 return False
                 
-            # Ждем завершения передачи (2.4мс для 120 байт при 507000 бод)
-            transmission_time = 0.0024  # 2.4мс
+            # Динамическое ожидание завершения передачи
+            # Начинаем с минимального времени и увеличиваем при необходимости
+            base_transmission_time = 0.0024  # 2.4мс базовое время
+            max_wait_time = 0.010  # 10мс максимум ожидания
             start_time = time.perf_counter()
             
-            # Ждем пока данные передадутся
-            while time.perf_counter() - start_time < transmission_time:
+            # Ждем базовое время
+            while time.perf_counter() - start_time < base_transmission_time:
                 pass
+                
+            # Проверяем, освободился ли UART буфер
+            wait_start = time.perf_counter()
+            while (self.serial_port.out_waiting > 0 and 
+                   time.perf_counter() - wait_start < max_wait_time):
+                time.sleep(0.0001)  # 100мкс пауза
                 
             # Принудительно ждем завершения передачи
             self.serial_port.flush()
@@ -627,6 +635,11 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     last_log_time = time.time()
     last_packet_time = time.perf_counter()
     
+    # Адаптивный тайминг
+    target_cycle_time = 0.00265  # 2.65мс целевой цикл
+    actual_cycle_time = target_cycle_time  # Начинаем с целевого времени
+    pause_time = 0.00025  # 250мкс пауза
+    
     while True:
         try:
             # Начало цикла
@@ -654,13 +667,24 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             else:
                 error_count += 1
             
-            # Строгий тайминг: 250мкс пауза между пакетами
-            pause_time = 0.00025  # 250мкс пауза
-            start_time = time.perf_counter()
+            # Адаптивная пауза для достижения целевого времени цикла
+            cycle_elapsed = time.perf_counter() - cycle_start
+            remaining_time = target_cycle_time - cycle_elapsed
             
-            # Ждем ровно 250мкс
-            while time.perf_counter() - start_time < pause_time:
+            if remaining_time > pause_time:
+                # Если осталось больше времени, чем минимальная пауза
+                actual_pause = remaining_time
+            else:
+                # Если цикл уже превысил целевое время, минимальная пауза
+                actual_pause = pause_time
+                
+            # Ждем рассчитанное время
+            pause_start = time.perf_counter()
+            while time.perf_counter() - pause_start < actual_pause:
                 pass
+                
+            # Обновляем реальное время цикла для адаптации
+            actual_cycle_time = time.perf_counter() - cycle_start
             
             # Получаем текущее время для логирования
             current_time = time.time()
@@ -675,7 +699,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 real_frequency = packet_count / 10.0 if packet_count > 0 else 0
                 # Вычисляем реальное время цикла
                 cycle_time = (current_packet_time - last_packet_time) / packet_count if packet_count > 0 else 0
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц")
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
@@ -684,7 +708,13 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
         except Exception as e:
             error_count += 1
             logger.error(f"Ошибка в задаче RS-485: {e}")
-            time.sleep(0.001)  # Короткая пауза при ошибке
+            
+            # При Write timeout ошибке делаем более длинную паузу
+            if "Write timeout" in str(e):
+                logger.warning("Write timeout - увеличиваем паузу для восстановления")
+                time.sleep(0.01)  # 10мс пауза при timeout
+            else:
+                time.sleep(0.001)  # 1мс пауза при других ошибках
 
 async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStore):
     """Задача обновления данных энкодера в Modbus регистрах"""
