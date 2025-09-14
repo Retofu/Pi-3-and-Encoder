@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 Объединенный скрипт для работы с энкодером, RS-485 и ModBus TCP
-Использует asyncio для работы в разных потоках
+Полностью синхронная версия с threading для ModBus
 """
 
-import asyncio
 import pigpio
 import math
 import time
@@ -12,7 +11,6 @@ import struct
 import serial
 import os
 import threading
-from typing import Optional
 from pymodbus.server import StartTcpServer
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
 
@@ -75,42 +73,41 @@ class BinaryPayloadBuilder:
     def to_registers(self):
         return self.data
 
-# Убираем класс SharedData - используем глобальные переменные как в оригинале
-
 class EncoderReader:
-    def __init__(self):
-        self._pi = None
+    def __init__(self, pigpio, a_pin, b_pin, z_pin):
+        self._pi = pigpio
         self._cb_a = None
         self._cb_z = None
         self._running = False
+        self._a_pin = a_pin
+        self._b_pin = b_pin
+        self._z_pin = z_pin
 
     def start(self):
-        """Синхронная инициализация энкодера (как в оригинале)"""
+        global counter
         if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
 
-        # Настройка пинов
-        self._pi.set_mode(A_PIN, pigpio.INPUT)
-        self._pi.set_pull_up_down(A_PIN, pigpio.PUD_UP)
-        self._pi.set_mode(B_PIN, pigpio.INPUT)
-        self._pi.set_pull_up_down(B_PIN, pigpio.PUD_UP)
-        self._pi.set_mode(Z_PIN, pigpio.INPUT)
-        self._pi.set_pull_up_down(Z_PIN, pigpio.PUD_UP)
+        # Минимальная настройка пинов
+        self._pi.set_mode(self._a_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._a_pin, pigpio.PUD_UP)
+        self._pi.set_mode(self._b_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._b_pin, pigpio.PUD_UP)
+        self._pi.set_mode(self._z_pin, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._z_pin, pigpio.PUD_UP)
 
-        # Фильтр дребезга
-        self._pi.set_glitch_filter(A_PIN, 50)
-        self._pi.set_glitch_filter(B_PIN, 50)
-        self._pi.set_glitch_filter(Z_PIN, 50)
+        # Минимальный фильтр дребезга
+        self._pi.set_glitch_filter(self._a_pin, 50)
+        self._pi.set_glitch_filter(self._b_pin, 50)
+        self._pi.set_glitch_filter(self._z_pin, 50)
 
         # Обработчики прерываний
-        self._cb_a = self._pi.callback(A_PIN, pigpio.EITHER_EDGE, self._handle_A)
-        self._cb_z = self._pi.callback(Z_PIN, pigpio.RISING_EDGE, self._handle_Z)
+        self._cb_a = self._pi.callback(self._a_pin, pigpio.EITHER_EDGE, self._handle_A)
+        self._cb_z = self._pi.callback(self._z_pin, pigpio.RISING_EDGE, self._handle_Z)
 
         self._running = True
-        print("Энкодер инициализирован")
 
     def stop(self):
-        """Остановка энкодера"""
         self._running = False
         if self._cb_a:
             self._cb_a.cancel()
@@ -118,16 +115,14 @@ class EncoderReader:
             self._cb_z.cancel()
         if self._pi:
             self._pi.stop()
-        print("Энкодер остановлен")
 
     def _handle_A(self, gpio, level, tick):
-        """Обработчик фазы A"""
         global counter
         if level == pigpio.TIMEOUT or not self._running:
             return
 
-        a = self._pi.read(A_PIN)
-        b = self._pi.read(B_PIN)
+        a = self._pi.read(self._a_pin)
+        b = self._pi.read(self._b_pin)
 
         if level == 1:
             counter += 1 if b == 0 else -1
@@ -135,37 +130,32 @@ class EncoderReader:
             counter += 1 if b == 1 else -1
 
     def _handle_Z(self, gpio, level, tick):
-        """Обработчик индекса Z"""
         global counter
         if level == 1 and self._running:
             counter = 0
 
 class RS485Transmitter:
-    def __init__(self):
-        self._device = UART_DEVICE
-        self._baudrate = UART_BAUDRATE
+    def __init__(self, pigpio, device, baudrate, rs485_de_pin):
+        self._device = device
+        self._baudrate = baudrate
         self._serial_port = None
-        self._pi = None
+        self._pi = pigpio
         self._running = False
+        self._rs485_de_pin = rs485_de_pin
         
-        # Создаем пакет
+        #Создаем пакет
         self._packet = bytearray(120)
         self._packet[0] = 0x65
         self._packet[118] = 0x45
         self._packet[119] = 0xCF
 
     def start(self):
-        """Синхронная инициализация RS-485 (как в оригинале)"""
         try:
             if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
 
-            self._pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
-            self._pi.write(RS485_DE_PIN, 0)
-
-            # Закрываем порт если он был открыт
-            if self._serial_port and self._serial_port.is_open:
-                self._serial_port.close()
+            self._pi.set_mode(self._rs485_de_pin, pigpio.OUTPUT)
+            self._pi.write(self._rs485_de_pin, 0)
 
             self._serial_port = serial.Serial(
                 port=self._device,
@@ -177,44 +167,27 @@ class RS485Transmitter:
                 write_timeout=0.001
             )
 
-            # Очищаем буферы
             self._serial_port.reset_input_buffer()
             self._serial_port.reset_output_buffer()
 
-            # Включаем передачу ОДИН РАЗ (как в оригинале)
-            self._pi.write(RS485_DE_PIN, 1)
+            # Включаем передачу
+            self._pi.write(self._rs485_de_pin, 1)
 
             self._running = True
-            print("RS-485 инициализирован")
 
         except Exception as e:
-            print(f"Ошибка инициализации RS-485: {e}")
             raise
 
     def stop(self):
-        """Остановка RS-485"""
         self._running = False
         if self._pi:
-            self._pi.write(RS485_DE_PIN, 0)
+            self._pi.write(self._rs485_de_pin, 0)
+            self._pi.stop()
         if self._serial_port and self._serial_port.is_open:
             self._serial_port.close()
-        print("RS-485 остановлен")
 
-    async def _reconnect(self):
-        """Переподключение RS-485"""
-        try:
-            print("Попытка переподключения RS-485...")
-            self.stop()
-            await asyncio.sleep(0.1)
-            await self.start()
-            return True
-        except Exception as e:
-            print(f"Ошибка переподключения RS-485: {e}")
-            return False
-
-    def send_packet(self, counter_value: int):
-        """Отправка пакета (точно как в rs.py)"""
-        global counter
+    def send_packet(self, counter_value):
+        """Отправка пакета с минимальными операциями"""
         if not self._running:
             return False
 
@@ -237,7 +210,7 @@ class RS485Transmitter:
         except Exception as e:
             # В случае ошибки отключаем передачу
             try:
-                self._pi.write(RS485_DE_PIN, 0)
+                self._pi.write(self._rs485_de_pin, 0)
             except:
                 pass
             return False
@@ -325,61 +298,17 @@ def run_modbus_server():
     
     return data_store
 
-def encoder_rs485_thread(pi_instance):
-    """Синхронный поток энкодера и RS-485 (точно как rs.py)"""
-    global counter
-    
-    # Инициализация энкодера
-    encoder = EncoderReader()
-    encoder._pi = pi_instance
-    
-    try:
-        encoder.start()
-        print("Энкодер инициализирован")
-    except Exception as e:
-        print(f"Ошибка инициализации энкодера: {e}")
-        return
-    
-    # Инициализация RS-485
-    rs485 = RS485Transmitter()
-    rs485._pi = pi_instance
-    
-    try:
-        rs485.start()
-        print("RS-485 инициализирован")
-    except Exception as e:
-        print(f"Ошибка инициализации RS-485: {e}")
-        encoder.stop()
-        return
-    
-    try:
-        # Основной цикл (точно как в rs.py)
-        while True:
-            # Отправляем пакет напрямую по счетчику
-            rs485.send_packet(counter)
-            
-    except KeyboardInterrupt:
-        print("Получен сигнал прерывания в RS-485 потоке")
-    except Exception as e:
-        print(f"Ошибка в основном цикле RS-485: {e}")
-    finally:
-        rs485.stop()
-        encoder.stop()
-
-async def modbus_task():
-    """Задача для обновления ModBus регистров"""
-    data_store = run_modbus_server()
-    
+def modbus_update_thread(data_store):
+    """Поток для обновления ModBus регистров"""
     try:
         while True:
             data_store.update_registers()
-            await asyncio.sleep(0.1)  # Обновление каждые 100мс
-            
+            time.sleep(0.1)  # Обновление каждые 100мс
     except Exception as e:
-        print(f"Ошибка в задаче ModBus: {e}")
+        print(f"Ошибка в потоке ModBus: {e}")
 
-async def status_task():
-    """Задача для вывода статуса"""
+def status_thread():
+    """Поток для вывода статуса"""
     global counter, angle_rad, angle_deg
     try:
         while True:
@@ -388,14 +317,15 @@ async def status_task():
             angle_deg = math.degrees(angle_rad)
             
             print(f"Угол: {angle_rad:.3f} рад ({angle_deg:.1f}°), Счетчик: {counter}")
-            await asyncio.sleep(1.0)  # Вывод каждую секунду
-            
+            time.sleep(1.0)  # Вывод каждую секунду
     except Exception as e:
-        print(f"Ошибка в задаче статуса: {e}")
+        print(f"Ошибка в потоке статуса: {e}")
 
-async def main():
-    """Основная асинхронная функция"""
-    print("=== Raspberry Pi 3 Encoder + RS-485 + ModBus TCP (Threading) ===")
+def main():
+    """Основная функция (точно как rs.py + ModBus)"""
+    global counter
+    
+    print("=== Raspberry Pi 3 Encoder + RS-485 + ModBus TCP (Sync) ===")
     
     # Устанавливаем высокий приоритет процессу
     try:
@@ -404,66 +334,58 @@ async def main():
     except:
         print("Не удалось установить высокий приоритет процесса")
     
-    # Инициализация pigpio
     pi_instance = pigpio.pi()
-    if not pi_instance.connected:
-        print("Ошибка: pigpio daemon не запущен")
+    
+    # Инициализация энкодера
+    encoder = EncoderReader(pigpio=pi_instance, a_pin=A_PIN, b_pin=B_PIN, z_pin=Z_PIN)
+    try:
+        encoder.start()
+        print("Энкодер инициализирован")
+    except Exception as e:
+        print(f"Ошибка инициализации энкодера: {e}")
         return
     
-    print("pigpio daemon подключен")
+    # Инициализация RS-485
+    rs485 = RS485Transmitter(pi_instance, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
+    try:
+        rs485.start()
+        print("RS-485 инициализирован")
+    except Exception as e:
+        print(f"Ошибка инициализации RS-485: {e}")
+        encoder.stop()
+        return
     
-    # Запускаем RS-485 и энкодер в отдельном синхронном потоке
-    rs485_thread = threading.Thread(target=encoder_rs485_thread, args=(pi_instance,), daemon=True)
-    rs485_thread.start()
-    print("RS-485 поток запущен")
+    # Запуск ModBus сервера
+    try:
+        data_store = run_modbus_server()
+        print("ModBus сервер запущен")
+    except Exception as e:
+        print(f"Ошибка запуска ModBus сервера: {e}")
+        encoder.stop()
+        rs485.stop()
+        return
     
-    # Создаем асинхронные задачи для ModBus и статуса
-    tasks = []
+    # Запуск потоков для ModBus и статуса
+    modbus_thread = threading.Thread(target=modbus_update_thread, args=(data_store,), daemon=True)
+    status_thread_obj = threading.Thread(target=status_thread, daemon=True)
+    
+    modbus_thread.start()
+    status_thread_obj.start()
+    
+    print("Все потоки запущены")
     
     try:
-        # Создаем асинхронные задачи
-        modbus_task_obj = asyncio.create_task(modbus_task())
-        status_task_obj = asyncio.create_task(status_task())
-        
-        tasks = [modbus_task_obj, status_task_obj]
-        
-        print("Все задачи запущены")
-        
-        # Ждем завершения задач
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        
-        # Проверяем результаты
-        for task in done:
-            try:
-                result = task.result()
-            except Exception as e:
-                print(f"Задача завершилась с ошибкой: {e}")
-        
-        # Отменяем оставшиеся задачи
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-                
+        # Основной цикл (точно как в rs.py)
+        while True:
+            # Отправляем пакет напрямую по счетчику
+            rs485.send_packet(counter)
+            
     except KeyboardInterrupt:
         print("\nПолучен сигнал прерывания, остановка...")
-    except Exception as e:
-        print(f"Критическая ошибка в main: {e}")
     finally:
-        # Отменяем все асинхронные задачи
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Ждем завершения отмены
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # RS-485 поток остановится автоматически при завершении программы
-        pi_instance.stop()
+        rs485.stop()
+        encoder.stop()
         print("Программа завершена")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
