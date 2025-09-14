@@ -404,8 +404,8 @@ class RS485Transmitter:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.001,
-                write_timeout=0.001
+                timeout=0.01,
+                write_timeout=0.01
             )
 
             self.serial_port.reset_input_buffer()
