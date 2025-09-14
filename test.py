@@ -578,8 +578,14 @@ async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Отправляем пакет ВСЕГДА (симплексный режим)
             rs485_transmitter.send_packet()
             
-            # Пауза 130мкс между пакетами (временно увеличена для тестирования)
-            await asyncio.sleep(0.001)  # 1мс для тестирования
+            # Пауза 130мкс между пакетами
+            # Используем busy wait для точной задержки в микросекундах
+            start_time = time.perf_counter()
+            while time.perf_counter() - start_time < 0.00013:  # 130мкс
+                pass
+            
+            # Небольшая асинхронная пауза чтобы не блокировать event loop
+            await asyncio.sleep(0)
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
