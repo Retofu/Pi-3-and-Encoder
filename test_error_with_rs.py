@@ -698,7 +698,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             if recovery_mode and consecutive_errors == 0:
                 # Если мы в режиме восстановления и нет ошибок, постепенно уменьшаем время цикла
                 if target_cycle_time > 0.00265:  # Если больше нормального времени
-                    target_cycle_time = max(0.00265, target_cycle_time * 0.9)  # Уменьшаем на 10%
+                    # Более агрессивное восстановление - уменьшаем на 20% вместо 10%
+                    target_cycle_time = max(0.00265, target_cycle_time * 0.8)  # Уменьшаем на 20%
                     logger.info(f"Восстановление: новое целевое время цикла {target_cycle_time*1000:.1f}мс")
                 else:
                     # Восстановление завершено
@@ -706,6 +707,14 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                     target_cycle_time = 0.00265
                     actual_cycle_time = target_cycle_time
                     logger.info("Восстановление завершено - возврат к нормальному режиму")
+            
+            # Принудительное восстановление, если система застряла в неправильном режиме
+            elif not recovery_mode and target_cycle_time > 0.005:  # Если не в режиме восстановления, но время цикла слишком большое
+                logger.warning(f"Принудительное восстановление: время цикла {target_cycle_time*1000:.1f}мс слишком большое")
+                recovery_mode = True
+                consecutive_errors = 0
+                target_cycle_time = 0.010  # 10мс для восстановления
+                actual_cycle_time = target_cycle_time
             
             # Получаем текущее время для логирования
             current_time = time.time()
@@ -722,7 +731,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 cycle_time = (current_packet_time - last_packet_time) / packet_count if packet_count > 0 else 0
                 # Добавляем информацию о режиме восстановления
                 recovery_status = "ВОССТАНОВЛЕНИЕ" if recovery_mode else "НОРМА"
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}")
+                target_status = f"цель: {target_cycle_time*1000:.1f}мс"
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}, {target_status}")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
@@ -736,6 +746,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Немедленный переход в режим восстановления при Write timeout
             if "Write timeout" in str(e):
                 recovery_mode = True
+                consecutive_errors = 0  # Сбрасываем счетчик для немедленного восстановления
                 logger.warning("Write timeout - немедленный переход в режим восстановления")
                 
                 # Сбрасываем UART буферы
