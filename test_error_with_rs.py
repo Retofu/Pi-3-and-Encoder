@@ -13,7 +13,6 @@ import struct
 import threading
 import time
 import ctypes
-import subprocess
 from typing import Optional, Dict, Any
 
 import pigpio
@@ -203,7 +202,7 @@ class DataChangeTracker:
         return self.dirty
 
 # ============================================================================
-# ФУНКЦИИ ДЛЯ ТОЧНОЙ ЗАДЕРЖКЕ
+# ФУНКЦИИ ДЛЯ ТОЧНОЙ ЗАДЕРЖКИ
 # ============================================================================
 
 def usleep(microseconds):
@@ -393,7 +392,6 @@ class RS485Transmitter:
         self.rs485_de_pin = rs485_de_pin
         self.serial_port: Optional[serial.Serial] = None
         self.running = False
-        self.lock = threading.Lock()
         
         self.packet = bytearray(Rs485Config.PACKET_SIZE)
         self.packet[0] = Rs485Config.HEADER_BYTE_0
@@ -419,8 +417,10 @@ class RS485Transmitter:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,
-                write_timeout=0.5  # Увеличенный таймаут записи
+                timeout=0.01,
+                write_timeout=0.01,
+                # Уменьшаем размер буфера для предотвращения накопления
+                write_buffer_size=256  # 2 пакета
             )
 
             self.serial_port.reset_input_buffer()
@@ -441,26 +441,6 @@ class RS485Transmitter:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
         logger.info("RS-485 передатчик остановлен")
-    
-    def restart_uart(self):
-        """Перезапуск UART порта"""
-        try:
-            if self.serial_port and self.serial_port.is_open:
-                self.serial_port.close()
-            self.serial_port = serial.Serial(
-                port=self.device,
-                baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,
-                write_timeout=0.5
-            )
-            logger.info("UART порт перезапущен")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка перезапуска UART: {e}")
-            return False
     
     def calculate_angle_roll(self, angle_encoder: float, offset_angle_roll: float) -> float:
         """Расчет угла крена"""
@@ -505,32 +485,30 @@ class RS485Transmitter:
         return True
     
     def send_packet(self):
-        """Отправка подготовленного пакета (без переключения направления!)"""
-        if not self.running or not self.serial_port or not self.serial_port.is_open:
-            logger.error("UART порт не открыт")
+        """Отправка подготовленного пакета с контролем буфера"""
+        if not self.running or not self.serial_port:
             return False
 
-        with self.lock:
-            try:
-                # Проверяем, готов ли порт к записи
-                if self.serial_port.out_waiting > 1024:  # Буфер почти полный
-                    self.serial_port.reset_output_buffer()
-                    logger.warning("Буфер UART переполнен, сброс")
-                    
-                self.serial_port.write(self.packet)
-                self.serial_port.flush()  # Ожидаем завершения записи
-                return True
+        try:
+            # Проверяем, не переполнен ли буфер передачи
+            if self.serial_port.out_waiting > len(self.packet) * 2:
+                logger.warning("Буфер передачи переполнен, очищаем...")
+                self.serial_port.reset_output_buffer()
+            
+            # Отправляем данные
+            bytes_written = self.serial_port.write(self.packet)
+            
+            # Принудительно сбрасываем буфер для немедленной отправки
+            self.serial_port.flush()
+            
+            return bytes_written == len(self.packet)
                 
-            except serial.SerialTimeoutException:
-                logger.warning("Таймаут записи в UART, сброс буфера")
-                if self.serial_port:
-                    self.serial_port.reset_output_buffer()
-                return False
-            except Exception as e:
-                logger.error(f"Ошибка отправки пакета RS-485: {e}")
-                # Пытаемся восстановить соединение
-                self.restart_uart()
-                return False
+        except serial.SerialTimeoutException:
+            logger.warning("Таймаут отправки RS-485 пакета")
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка отправки пакета RS-485: {e}")
+            return False
 
 # ============================================================================
 # ФУНКЦИИ MODBUS СЕРВЕРА
@@ -606,32 +584,38 @@ async def parameter_update_task(data_store: ModbusDataStore, rs485_transmitter: 
             logger.error(f"Ошибка в задаче обновления параметров: {e}")
             await asyncio.sleep(1)
 
-def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
-    """Задача передачи данных по RS-485 в симплексном режиме"""
+async def rs485_transmission_task(rs485_transmitter: RS485Transmitter, data_store: ModbusDataStore):
+    """Асинхронная задача передачи данных по RS-485"""
     global counter
+    
+    # Точный интервал между пакетами (2.5ms = 400Hz)
+    PACKET_INTERVAL = 0.0025
     
     while True:
         try:
-            # Получаем текущий PPR из трекера
+            # Получаем текущий PPR
             ppr = rs485_transmitter.change_tracker.last_ppr
             if ppr == 0:
                 ppr = 360
                 
-            # Вычисляем угол энкодера в каждом цикле (для симплексного режима)
+            # Вычисляем угол энкодера
             angle_encoder_deg = (counter % ppr) * (360.0 / ppr)
             
-            # Подготавливаем пакет (всегда обновляем угол)
+            # Подготавливаем пакет
             rs485_transmitter.prepare_packet(angle_encoder_deg)
             
-            # Отправляем пакет ВСЕГДА (симплексный режим)
-            rs485_transmitter.send_packet()
+            # Отправляем пакет
+            success = rs485_transmitter.send_packet()
             
-            # Пауза вместо активного ожидания
-            time.sleep(0.0025)  # 2.5ms
+            if not success:
+                logger.warning("Ошибка отправки RS-485 пакета")
+            
+            # Точная задержка с использованием asyncio
+            await asyncio.sleep(PACKET_INTERVAL)
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
 async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStore):
     """Задача обновления данных энкодера в Modbus регистрах"""
@@ -656,32 +640,6 @@ async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStor
             logger.error(f"Ошибка в задаче обновления энкодера: {e}")
             await asyncio.sleep(0.1)
 
-def start_pigpio_daemon():
-    """Запуск pigpio демона"""
-    try:
-        # Проверяем, запущен ли уже демон
-        result = subprocess.run(['pgrep', 'pigpiod'], capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("pigpio демон уже запущен")
-            return True
-            
-        # Запускаем демон
-        logger.info("Запуск pigpio демона...")
-        result = subprocess.run(['sudo', 'pigpiod'], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            logger.info("pigpio демон успешно запущен")
-            # Даем демону время на запуск
-            time.sleep(2)
-            return True
-        else:
-            logger.error(f"Ошибка запуска pigpio демона: {result.stderr}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"Ошибка при запуске pigpio демона: {e}")
-        return False
-
 # ============================================================================
 # ОСНОВНАЯ ФУНКЦИЯ
 # ============================================================================
@@ -693,11 +651,6 @@ async def main():
     logger.info("=== Raspberry Pi 3 Encoder + Modbus Server + RS-485 ===")
     logger.info("Режим работы: симплексный (постоянная передача)")
     
-    # Запускаем pigpio демон
-    if not start_pigpio_daemon():
-        logger.error("Не удалось запустить pigpio демон. Запустите вручную: sudo pigpiod")
-        return
-    
     # Устанавливаем высокий приоритет процессу
     try:
         os.nice(-20)  # Максимальный приоритет
@@ -707,8 +660,7 @@ async def main():
     # Инициализация pigpio
     pi_instance = pigpio.pi()
     if not pi_instance.connected:
-        logger.error("Не удалось подключиться к pigpio daemon")
-        logger.error("Попробуйте запустить вручную: sudo pigpiod")
+        logger.error("pigpio daemon не запущен")
         return
     
     try:
@@ -738,15 +690,12 @@ async def main():
         logger.info("Все системы инициализированы. Начинаем работу...")
         logger.info("Modbus сервер запущен. Клиент может подключаться для настройки параметров.")
         
-        # Запускаем RS-485 задачу в отдельном потоке
-        rs485_thread = threading.Thread(target=rs485_transmission_task, args=(rs485_transmitter,), daemon=True)
-        rs485_thread.start()
-        
-        # Запускаем остальные асинхронные задачи
+        # Запускаем все асинхронные задачи в одном event loop
         tasks = [
             asyncio.create_task(power_control_task(power_controller, data_store)),
             asyncio.create_task(parameter_update_task(data_store, rs485_transmitter)),
-            asyncio.create_task(encoder_update_task(encoder, data_store))
+            asyncio.create_task(encoder_update_task(encoder, data_store)),
+            asyncio.create_task(rs485_transmission_task(rs485_transmitter, data_store))
         ]
         
         # Ждем завершения задач
