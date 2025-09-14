@@ -217,9 +217,8 @@ def usleep(microseconds):
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И НАСТРОЙКИ
 # ============================================================================
 
-# Глобальные переменные с синхронизацией
+# Глобальные переменные как в rs.py
 counter = 0
-counter_lock = threading.Lock()  # Блокировка для безопасного доступа к counter
 power_27v_enabled = False
 
 # Настройка логирования
@@ -372,12 +371,11 @@ class EncoderReader:
             a = self.pi.read(self.a_pin)
             b = self.pi.read(self.b_pin)
 
-            # Безопасное изменение counter с блокировкой
-            with counter_lock:
-                if level == 1:
-                    counter += 1 if b == 0 else -1
-                else:
-                    counter += 1 if b == 1 else -1
+            # Простое изменение counter как в rs.py
+            if level == 1:
+                counter += 1 if b == 0 else -1
+            else:
+                counter += 1 if b == 1 else -1
         except Exception as e:
             logger.error(f"Ошибка в обработчике фазы A: {e}")
 
@@ -385,9 +383,8 @@ class EncoderReader:
         """Обработчик индекса Z"""
         global counter
         if level == 1 and self.running:
-            # Безопасное сброса counter с блокировкой
-            with counter_lock:
-                counter = 0
+            # Простой сброс counter как в rs.py
+            counter = 0
 
 class RS485Transmitter:
     """Класс для передачи данных по RS-485 в симплексном режиме"""
@@ -425,7 +422,7 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,  # Минимальный timeout как в rs.py
-                write_timeout=0.005,  # 5мс - достаточно для передачи 120 байт
+                write_timeout=0.010,  # 10мс - с запасом для передачи 120 байт
                 xonxoff=False,  # Отключаем XON/XOFF flow control
                 rtscts=False,   # Отключаем RTS/CTS flow control
                 dsrdtr=False    # Отключаем DSR/DTR flow control
@@ -636,9 +633,8 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             if ppr == 0:
                 ppr = 360
                 
-            # Безопасное чтение counter с блокировкой
-            with counter_lock:
-                current_counter = counter
+            # Простое чтение counter как в rs.py
+            current_counter = counter
                 
             # Вычисляем угол энкодера в каждом цикле (для симплексного режима)
             angle_encoder_deg = (current_counter % ppr) * (360.0 / ppr)
@@ -695,9 +691,8 @@ async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStor
             if ppr == 0:
                 ppr = 360  # Значение по умолчанию
             
-            # Безопасное чтение counter с блокировкой
-            with counter_lock:
-                current_counter = counter
+            # Простое чтение counter как в rs.py
+            current_counter = counter
             
             angle_rad = (current_counter % ppr) * (2 * math.pi / ppr)
             angle_deg = math.degrees(angle_rad)
