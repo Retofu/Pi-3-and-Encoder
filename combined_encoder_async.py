@@ -84,8 +84,8 @@ class EncoderReader:
         self._cb_z = None
         self._running = False
 
-    async def start(self):
-        """Асинхронная инициализация энкодера"""
+    def start(self):
+        """Синхронная инициализация энкодера (как в оригинале)"""
         if not self._pi.connected:
             raise RuntimeError("pigpio daemon is not running")
 
@@ -154,8 +154,8 @@ class RS485Transmitter:
         self._packet[118] = 0x45
         self._packet[119] = 0xCF
 
-    async def start(self):
-        """Асинхронная инициализация RS-485"""
+    def start(self):
+        """Синхронная инициализация RS-485 (как в оригинале)"""
         try:
             if not self._pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
@@ -185,7 +185,6 @@ class RS485Transmitter:
             self._pi.write(RS485_DE_PIN, 1)
 
             self._running = True
-            self._error_count = 0
             print("RS-485 инициализирован")
 
         except Exception as e:
@@ -326,41 +325,46 @@ def run_modbus_server():
     
     return data_store
 
-async def encoder_task(pi_instance):
-    """Задача для чтения энкодера"""
+async def encoder_rs485_task(pi_instance):
+    """Объединенная задача энкодера и RS-485 (как в оригинале)"""
+    global counter
+    
+    # Инициализация энкодера
     encoder = EncoderReader()
     encoder._pi = pi_instance
     
     try:
-        await encoder.start()
-        
-        # Энкодер работает через прерывания, не нужен цикл
-        while True:
-            await asyncio.sleep(1.0)  # Просто ждем
-            
+        encoder.start()  # Синхронный вызов
+        print("Энкодер инициализирован")
     except Exception as e:
-        print(f"Ошибка в задаче энкодера: {e}")
-    finally:
-        encoder.stop()
-
-async def rs485_task(pi_instance):
-    """Задача для передачи RS-485 (точно как в rs.py)"""
-    global counter
+        print(f"Ошибка инициализации энкодера: {e}")
+        return
+    
+    # Инициализация RS-485
     rs485 = RS485Transmitter()
     rs485._pi = pi_instance
     
     try:
-        await rs485.start()
-        
-        while True:
-            # Отправляем пакет напрямую по счетчику (как в оригинале)
-            rs485.send_packet(counter)
-            # НЕТ ЗАДЕРЖЕК - максимальная скорость как в оригинале
-            
+        rs485.start()  # Синхронный вызов
+        print("RS-485 инициализирован")
     except Exception as e:
-        print(f"Критическая ошибка в задаче RS-485: {e}")
+        print(f"Ошибка инициализации RS-485: {e}")
+        encoder.stop()
+        return
+    
+    try:
+        # Основной цикл (точно как в rs.py)
+        while True:
+            # Отправляем пакет напрямую по счетчику
+            rs485.send_packet(counter)
+            
+    except KeyboardInterrupt:
+        print("Получен сигнал прерывания")
+    except Exception as e:
+        print(f"Ошибка в основном цикле: {e}")
     finally:
         rs485.stop()
+        encoder.stop()
 
 async def modbus_task():
     """Задача для обновления ModBus регистров"""
@@ -413,12 +417,11 @@ async def main():
     
     try:
         # Создаем задачи с обработкой исключений
-        encoder_task_obj = asyncio.create_task(encoder_task(pi_instance))
-        rs485_task_obj = asyncio.create_task(rs485_task(pi_instance))
+        encoder_rs485_task_obj = asyncio.create_task(encoder_rs485_task(pi_instance))
         modbus_task_obj = asyncio.create_task(modbus_task())
         status_task_obj = asyncio.create_task(status_task())
         
-        tasks = [encoder_task_obj, rs485_task_obj, modbus_task_obj, status_task_obj]
+        tasks = [encoder_rs485_task_obj, modbus_task_obj, status_task_obj]
         
         print("Все задачи запущены")
         
