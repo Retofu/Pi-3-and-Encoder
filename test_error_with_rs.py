@@ -694,6 +694,15 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Обновляем реальное время цикла для адаптации
             actual_cycle_time = time.perf_counter() - cycle_start
             
+            # Немедленная проверка на аномальное поведение
+            if actual_cycle_time > 0.010 and not recovery_mode:  # Если цикл больше 10мс и не в режиме восстановления
+                logger.warning(f"НЕМЕДЛЕННОЕ ВОССТАНОВЛЕНИЕ: цикл {actual_cycle_time*1000:.1f}мс слишком большой")
+                logger.warning(f"ДИАГНОСТИКА: target_cycle_time={target_cycle_time*1000:.1f}мс, pause_time={pause_time*1000:.1f}мс, actual_pause={actual_pause*1000:.1f}мс")
+                recovery_mode = True
+                consecutive_errors = 0
+                target_cycle_time = 0.010  # 10мс для восстановления
+                actual_cycle_time = target_cycle_time
+            
             # Постепенное восстановление нормального тайминга после ошибок
             if recovery_mode and consecutive_errors == 0:
                 # Если мы в режиме восстановления и нет ошибок, постепенно уменьшаем время цикла
@@ -709,8 +718,9 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                     logger.info("Восстановление завершено - возврат к нормальному режиму")
             
             # Принудительное восстановление, если система застряла в неправильном режиме
-            elif not recovery_mode and target_cycle_time > 0.005:  # Если не в режиме восстановления, но время цикла слишком большое
-                logger.warning(f"Принудительное восстановление: время цикла {target_cycle_time*1000:.1f}мс слишком большое")
+            # Проверяем реальное время цикла, а не целевое
+            elif not recovery_mode and actual_cycle_time > 0.005:  # Если реальное время цикла слишком большое
+                logger.warning(f"Принудительное восстановление: реальное время цикла {actual_cycle_time*1000:.1f}мс слишком большое")
                 recovery_mode = True
                 consecutive_errors = 0
                 target_cycle_time = 0.010  # 10мс для восстановления
@@ -732,6 +742,11 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 # Добавляем информацию о режиме восстановления
                 recovery_status = "ВОССТАНОВЛЕНИЕ" if recovery_mode else "НОРМА"
                 target_status = f"цель: {target_cycle_time*1000:.1f}мс"
+                
+                # Дополнительная диагностика при аномальном поведении
+                if cycle_time > 0.010:  # Если цикл больше 10мс
+                    logger.warning(f"АНОМАЛИЯ: цикл {cycle_time*1000:.1f}мс, частота {real_frequency:.1f} Гц, режим {recovery_status}")
+                
                 logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}, {target_status}")
                 packet_count = 0
                 error_count = 0
