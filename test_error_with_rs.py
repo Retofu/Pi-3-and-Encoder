@@ -640,6 +640,11 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     actual_cycle_time = target_cycle_time  # Начинаем с целевого времени
     pause_time = 0.00025  # 250мкс пауза
     
+    # Счетчики для восстановления
+    consecutive_errors = 0
+    max_consecutive_errors = 3
+    recovery_mode = False
+    
     while True:
         try:
             # Начало цикла
@@ -662,10 +667,14 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 # Отправляем пакет ВСЕГДА (симплексный режим)
                 if rs485_transmitter.send_packet():
                     packet_count += 1
+                    consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
+                    recovery_mode = False   # Выходим из режима восстановления
                 else:
                     error_count += 1
+                    consecutive_errors += 1
             else:
                 error_count += 1
+                consecutive_errors += 1
             
             # Адаптивная пауза для достижения целевого времени цикла
             cycle_elapsed = time.perf_counter() - cycle_start
@@ -686,6 +695,19 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Обновляем реальное время цикла для адаптации
             actual_cycle_time = time.perf_counter() - cycle_start
             
+            # Постепенное восстановление нормального тайминга после ошибок
+            if recovery_mode and consecutive_errors == 0:
+                # Если мы в режиме восстановления и нет ошибок, постепенно уменьшаем время цикла
+                if target_cycle_time > 0.00265:  # Если больше нормального времени
+                    target_cycle_time = max(0.00265, target_cycle_time * 0.9)  # Уменьшаем на 10%
+                    logger.info(f"Восстановление: новое целевое время цикла {target_cycle_time*1000:.1f}мс")
+                else:
+                    # Восстановление завершено
+                    recovery_mode = False
+                    target_cycle_time = 0.00265
+                    actual_cycle_time = target_cycle_time
+                    logger.info("Восстановление завершено - возврат к нормальному режиму")
+            
             # Получаем текущее время для логирования
             current_time = time.time()
             
@@ -699,7 +721,9 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
                 real_frequency = packet_count / 10.0 if packet_count > 0 else 0
                 # Вычисляем реальное время цикла
                 cycle_time = (current_packet_time - last_packet_time) / packet_count if packet_count > 0 else 0
-                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс")
+                # Добавляем информацию о режиме восстановления
+                recovery_status = "ВОССТАНОВЛЕНИЕ" if recovery_mode else "НОРМА"
+                logger.info(f"RS-485: {packet_count} пакетов, {error_count} ошибок, UART буфер: {uart_waiting} байт, цикл: {cycle_time*1000:.1f}мс, частота: {real_frequency:.1f} Гц, адапт: {actual_cycle_time*1000:.1f}мс, режим: {recovery_status}")
                 packet_count = 0
                 error_count = 0
                 last_log_time = current_time
@@ -707,8 +731,26 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             
         except Exception as e:
             error_count += 1
+            consecutive_errors += 1
             logger.error(f"Ошибка в задаче RS-485: {e}")
             
+            # Проверяем, нужно ли перейти в режим восстановления
+            if consecutive_errors >= max_consecutive_errors:
+                recovery_mode = True
+                logger.warning(f"Переход в режим восстановления после {consecutive_errors} ошибок подряд")
+                
+                # Сбрасываем UART буферы
+                try:
+                    if rs485_transmitter.serial_port:
+                        rs485_transmitter.serial_port.reset_output_buffer()
+                        rs485_transmitter.serial_port.flush()
+                except:
+                    pass
+                
+                # Увеличиваем целевое время цикла для восстановления
+                target_cycle_time = 0.010  # 10мс для восстановления
+                actual_cycle_time = target_cycle_time
+                
             # При Write timeout ошибке делаем более длинную паузу
             if "Write timeout" in str(e):
                 logger.warning("Write timeout - увеличиваем паузу для восстановления")
