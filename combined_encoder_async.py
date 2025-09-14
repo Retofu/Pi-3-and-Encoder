@@ -162,6 +162,8 @@ class RS485Transmitter:
         self._pi = None
         self._running = False
         self._shared_data = shared_data
+        self._error_count = 0
+        self._max_errors = 10
         
         # Создаем пакет
         self._packet = bytearray(120)
@@ -178,6 +180,10 @@ class RS485Transmitter:
             self._pi.set_mode(RS485_DE_PIN, pigpio.OUTPUT)
             self._pi.write(RS485_DE_PIN, 0)
 
+            # Закрываем порт если он был открыт
+            if self._serial_port and self._serial_port.is_open:
+                self._serial_port.close()
+
             self._serial_port = serial.Serial(
                 port=self._device,
                 baudrate=self._baudrate,
@@ -185,19 +191,22 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,
-                write_timeout=0.001
+                write_timeout=0.01  # Увеличиваем timeout для записи
             )
 
+            # Очищаем буферы
             self._serial_port.reset_input_buffer()
             self._serial_port.reset_output_buffer()
-
-            # Включаем передачу
-            self._pi.write(RS485_DE_PIN, 1)
+            
+            # Небольшая задержка для стабилизации
+            await asyncio.sleep(0.01)
 
             self._running = True
+            self._error_count = 0
             print("RS-485 инициализирован")
 
         except Exception as e:
+            print(f"Ошибка инициализации RS-485: {e}")
             raise
 
     def stop(self):
@@ -209,9 +218,21 @@ class RS485Transmitter:
             self._serial_port.close()
         print("RS-485 остановлен")
 
+    async def _reconnect(self):
+        """Переподключение RS-485"""
+        try:
+            print("Попытка переподключения RS-485...")
+            self.stop()
+            await asyncio.sleep(0.1)
+            await self.start()
+            return True
+        except Exception as e:
+            print(f"Ошибка переподключения RS-485: {e}")
+            return False
+
     async def send_packet(self, counter_value: int):
-        """Асинхронная отправка пакета"""
-        if not self._running:
+        """Асинхронная отправка пакета с улучшенной обработкой ошибок"""
+        if not self._running or not self._serial_port or not self._serial_port.is_open:
             return False
 
         try:
@@ -223,19 +244,50 @@ class RS485Transmitter:
             checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
-            # Отправляем пакет
-            self._serial_port.write(self._packet)
+            # Включаем передачу перед отправкой
+            self._pi.write(RS485_DE_PIN, 1)
             
-            # Небольшая задержка
-            await asyncio.sleep(0.0023)
+            # Небольшая задержка для стабилизации DE
+            await asyncio.sleep(0.0001)
 
-            return True
+            # Отправляем пакет
+            bytes_written = self._serial_port.write(self._packet)
+            
+            # Ждем завершения передачи
+            self._serial_port.flush()
+            
+            # Небольшая задержка после передачи
+            await asyncio.sleep(0.0001)
+            
+            # Отключаем передачу
+            self._pi.write(RS485_DE_PIN, 0)
+
+            # Сбрасываем счетчик ошибок при успешной отправке
+            if bytes_written == len(self._packet):
+                self._error_count = 0
+                return True
+            else:
+                raise Exception(f"Отправлено {bytes_written} из {len(self._packet)} байт")
+
         except Exception as e:
-            # В случае ошибки отключаем передачу
+            self._error_count += 1
+            print(f"Ошибка отправки RS-485 (попытка {self._error_count}): {e}")
+            
+            # Отключаем передачу в случае ошибки
             try:
                 self._pi.write(RS485_DE_PIN, 0)
             except:
                 pass
+            
+            # Если слишком много ошибок, пытаемся переподключиться
+            if self._error_count >= self._max_errors:
+                print(f"Слишком много ошибок RS-485 ({self._error_count}), переподключение...")
+                if await self._reconnect():
+                    self._error_count = 0
+                else:
+                    self._running = False
+                    return False
+            
             return False
 
 class ModbusDataStore:
@@ -336,20 +388,43 @@ async def encoder_task(shared_data: SharedData, pi_instance):
         encoder.stop()
 
 async def rs485_task(shared_data: SharedData, pi_instance):
-    """Задача для передачи RS-485"""
+    """Задача для передачи RS-485 с улучшенной обработкой ошибок"""
     rs485 = RS485Transmitter(shared_data)
     rs485._pi = pi_instance
     
     try:
         await rs485.start()
         
+        consecutive_failures = 0
+        max_consecutive_failures = 5
+        
         while True:
-            counter, _, _ = await shared_data.get_encoder_data()
-            await rs485.send_packet(counter)
-            await asyncio.sleep(0.003)  # Отправка каждые 3мс
-            
+            try:
+                counter, _, _ = await shared_data.get_encoder_data()
+                success = await rs485.send_packet(counter)
+                
+                if success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        print(f"Слишком много последовательных ошибок RS-485 ({consecutive_failures})")
+                        # Попытка переподключения
+                        if await rs485._reconnect():
+                            consecutive_failures = 0
+                        else:
+                            print("Не удалось переподключить RS-485, остановка задачи")
+                            break
+                
+                await asyncio.sleep(0.003)  # Отправка каждые 3мс
+                
+            except Exception as e:
+                print(f"Ошибка в цикле RS-485: {e}")
+                consecutive_failures += 1
+                await asyncio.sleep(0.01)  # Задержка при ошибке
+                
     except Exception as e:
-        print(f"Ошибка в задаче RS-485: {e}")
+        print(f"Критическая ошибка в задаче RS-485: {e}")
     finally:
         rs485.stop()
 
@@ -383,8 +458,9 @@ async def main():
     # Устанавливаем высокий приоритет процессу
     try:
         os.nice(-20)  # Максимальный приоритет
+        print("Установлен высокий приоритет процесса")
     except:
-        pass
+        print("Не удалось установить высокий приоритет процесса")
     
     # Инициализация pigpio
     pi_instance = pigpio.pi()
@@ -392,21 +468,59 @@ async def main():
         print("Ошибка: pigpio daemon не запущен")
         return
     
+    print("pigpio daemon подключен")
+    
     # Создаем общие данные
     shared_data = SharedData()
     
+    # Создаем задачи
+    tasks = []
+    
     try:
-        # Запускаем все задачи параллельно
-        await asyncio.gather(
-            encoder_task(shared_data, pi_instance),
-            rs485_task(shared_data, pi_instance),
-            modbus_task(shared_data),
-            status_task(shared_data)
-        )
+        # Создаем задачи с обработкой исключений
+        encoder_task_obj = asyncio.create_task(encoder_task(shared_data, pi_instance))
+        rs485_task_obj = asyncio.create_task(rs485_task(shared_data, pi_instance))
+        modbus_task_obj = asyncio.create_task(modbus_task(shared_data))
+        status_task_obj = asyncio.create_task(status_task(shared_data))
+        
+        tasks = [encoder_task_obj, rs485_task_obj, modbus_task_obj, status_task_obj]
+        
+        print("Все задачи запущены")
+        
+        # Ждем завершения задач
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        
+        # Проверяем результаты
+        for task in done:
+            try:
+                result = task.result()
+            except Exception as e:
+                print(f"Задача завершилась с ошибкой: {e}")
+        
+        # Отменяем оставшиеся задачи
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+                
     except KeyboardInterrupt:
-        print("\nОстановка...")
+        print("\nПолучен сигнал прерывания, остановка...")
+    except Exception as e:
+        print(f"Критическая ошибка в main: {e}")
     finally:
+        # Отменяем все задачи
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Ждем завершения отмены
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        
         pi_instance.stop()
+        print("Программа завершена")
 
 if __name__ == "__main__":
     asyncio.run(main())
