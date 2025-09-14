@@ -425,7 +425,7 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,  # Минимальный timeout как в rs.py
-                write_timeout=0.001,  # Минимальный write_timeout как в rs.py
+                write_timeout=0.005,  # 5мс - достаточно для передачи 120 байт
                 xonxoff=False,  # Отключаем XON/XOFF flow control
                 rtscts=False,   # Отключаем RTS/CTS flow control
                 dsrdtr=False    # Отключаем DSR/DTR flow control
@@ -524,6 +524,17 @@ class RS485Transmitter:
             return True
             
         except Exception as e:
+            # В случае ошибки отключаем передачу как в rs.py
+            try:
+                self.pi.write(self.rs485_de_pin, 0)
+                time.sleep(0.001)  # Короткая пауза
+                # Сбрасываем UART буферы
+                if self.serial_port:
+                    self.serial_port.reset_output_buffer()
+                    self.serial_port.flush()
+                self.pi.write(self.rs485_de_pin, 1)  # Включаем обратно
+            except:
+                pass
             logger.error(f"Ошибка отправки пакета RS-485: {e}")
             return False
 
