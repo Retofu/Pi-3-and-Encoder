@@ -418,9 +418,7 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.01,
-                write_timeout=0.01,
-                # Уменьшаем размер буфера для предотвращения накопления
-                write_buffer_size=256  # 2 пакета
+                write_timeout=0.01
             )
 
             self.serial_port.reset_input_buffer()
