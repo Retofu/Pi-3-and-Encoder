@@ -78,15 +78,15 @@ class SharedData:
         self._angle_rad = 0.0
         self._angle_deg = 0.0
         
-    async def update_encoder_data(self, counter: int):
-        async with self._lock:
-            self._counter = counter
-            self._angle_rad = counter * ANGLE_MULTIPLIER
-            self._angle_deg = math.degrees(self._angle_rad)
+    def update_encoder_data(self, counter: int):
+        """Синхронное обновление данных энкодера"""
+        self._counter = counter
+        self._angle_rad = counter * ANGLE_MULTIPLIER
+        self._angle_deg = math.degrees(self._angle_rad)
     
-    async def get_encoder_data(self):
-        async with self._lock:
-            return self._counter, self._angle_rad, self._angle_deg
+    def get_encoder_data(self):
+        """Синхронное получение данных энкодера"""
+        return self._counter, self._angle_rad, self._angle_deg
 
 class EncoderReader:
     def __init__(self, shared_data: SharedData):
@@ -150,9 +150,9 @@ class EncoderReader:
         if level == 1 and self._running:
             self._shared_data._counter = 0
 
-    async def update_shared_data(self):
+    def update_shared_data(self):
         """Обновление общих данных"""
-        await self._shared_data.update_encoder_data(self._shared_data._counter)
+        self._shared_data.update_encoder_data(self._shared_data._counter)
 
 class RS485Transmitter:
     def __init__(self, shared_data: SharedData):
@@ -191,15 +191,15 @@ class RS485Transmitter:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.001,
-                write_timeout=0.01  # Увеличиваем timeout для записи
+                write_timeout=0.001
             )
 
             # Очищаем буферы
             self._serial_port.reset_input_buffer()
             self._serial_port.reset_output_buffer()
-            
-            # Небольшая задержка для стабилизации
-            await asyncio.sleep(0.01)
+
+            # Включаем передачу ОДИН РАЗ (как в оригинале)
+            self._pi.write(RS485_DE_PIN, 1)
 
             self._running = True
             self._error_count = 0
@@ -231,8 +231,8 @@ class RS485Transmitter:
             return False
 
     async def send_packet(self, counter_value: int):
-        """Асинхронная отправка пакета с улучшенной обработкой ошибок"""
-        if not self._running or not self._serial_port or not self._serial_port.is_open:
+        """Асинхронная отправка пакета (упрощенная версия как в rs.py)"""
+        if not self._running:
             return False
 
         try:
@@ -244,50 +244,19 @@ class RS485Transmitter:
             checksum = sum(self._packet[55:59], 0x65)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
-            # Включаем передачу перед отправкой
-            self._pi.write(RS485_DE_PIN, 1)
+            # Отправляем пакет (DE уже включен)
+            self._serial_port.write(self._packet)
             
-            # Небольшая задержка для стабилизации DE
-            await asyncio.sleep(0.0001)
+            # Небольшая задержка (как в оригинале)
+            await asyncio.sleep(0.0023)
 
-            # Отправляем пакет
-            bytes_written = self._serial_port.write(self._packet)
-            
-            # Ждем завершения передачи
-            self._serial_port.flush()
-            
-            # Небольшая задержка после передачи
-            await asyncio.sleep(0.0001)
-            
-            # Отключаем передачу
-            self._pi.write(RS485_DE_PIN, 0)
-
-            # Сбрасываем счетчик ошибок при успешной отправке
-            if bytes_written == len(self._packet):
-                self._error_count = 0
-                return True
-            else:
-                raise Exception(f"Отправлено {bytes_written} из {len(self._packet)} байт")
-
+            return True
         except Exception as e:
-            self._error_count += 1
-            print(f"Ошибка отправки RS-485 (попытка {self._error_count}): {e}")
-            
-            # Отключаем передачу в случае ошибки
+            # В случае ошибки отключаем передачу
             try:
                 self._pi.write(RS485_DE_PIN, 0)
             except:
                 pass
-            
-            # Если слишком много ошибок, пытаемся переподключиться
-            if self._error_count >= self._max_errors:
-                print(f"Слишком много ошибок RS-485 ({self._error_count}), переподключение...")
-                if await self._reconnect():
-                    self._error_count = 0
-                else:
-                    self._running = False
-                    return False
-            
             return False
 
 class ModbusDataStore:
@@ -300,7 +269,7 @@ class ModbusDataStore:
         
     async def update_registers(self):
         """Асинхронное обновление регистров данными энкодера"""
-        counter, angle_rad, angle_deg = await self._shared_data.get_encoder_data()
+        counter, angle_rad, angle_deg = self._shared_data.get_encoder_data()
         
         # Упаковка float32 в 2 регистра (big-endian)
         builder = BinaryPayloadBuilder(byteorder=Endian.Big, wordorder=Endian.Big)
@@ -379,7 +348,7 @@ async def encoder_task(shared_data: SharedData, pi_instance):
         await encoder.start()
         
         while True:
-            await encoder.update_shared_data()
+            encoder.update_shared_data()
             await asyncio.sleep(0.001)  # Обновление каждую миллисекунду
             
     except Exception as e:
@@ -388,39 +357,21 @@ async def encoder_task(shared_data: SharedData, pi_instance):
         encoder.stop()
 
 async def rs485_task(shared_data: SharedData, pi_instance):
-    """Задача для передачи RS-485 с улучшенной обработкой ошибок"""
+    """Задача для передачи RS-485 (упрощенная версия)"""
     rs485 = RS485Transmitter(shared_data)
     rs485._pi = pi_instance
     
     try:
         await rs485.start()
         
-        consecutive_failures = 0
-        max_consecutive_failures = 5
-        
         while True:
             try:
-                counter, _, _ = await shared_data.get_encoder_data()
-                success = await rs485.send_packet(counter)
-                
-                if success:
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        print(f"Слишком много последовательных ошибок RS-485 ({consecutive_failures})")
-                        # Попытка переподключения
-                        if await rs485._reconnect():
-                            consecutive_failures = 0
-                        else:
-                            print("Не удалось переподключить RS-485, остановка задачи")
-                            break
-                
+                counter, _, _ = shared_data.get_encoder_data()
+                await rs485.send_packet(counter)
                 await asyncio.sleep(0.003)  # Отправка каждые 3мс
                 
             except Exception as e:
                 print(f"Ошибка в цикле RS-485: {e}")
-                consecutive_failures += 1
                 await asyncio.sleep(0.01)  # Задержка при ошибке
                 
     except Exception as e:
@@ -444,7 +395,7 @@ async def status_task(shared_data: SharedData):
     """Задача для вывода статуса"""
     try:
         while True:
-            counter, angle_rad, angle_deg = await shared_data.get_encoder_data()
+            counter, angle_rad, angle_deg = shared_data.get_encoder_data()
             print(f"Угол: {angle_rad:.3f} рад ({angle_deg:.1f}°), Счетчик: {counter}")
             await asyncio.sleep(1.0)  # Вывод каждую секунду
             
