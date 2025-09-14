@@ -13,6 +13,7 @@ import struct
 import threading
 import time
 import ctypes
+import subprocess
 from typing import Optional, Dict, Any
 
 import pigpio
@@ -202,7 +203,7 @@ class DataChangeTracker:
         return self.dirty
 
 # ============================================================================
-# ФУНКЦИИ ДЛЯ ТОЧНОЙ ЗАДЕРЖКИ
+# ФУНКЦИИ ДЛЯ ТОЧНОЙ ЗАДЕРЖКЕ
 # ============================================================================
 
 def usleep(microseconds):
@@ -655,6 +656,32 @@ async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStor
             logger.error(f"Ошибка в задаче обновления энкодера: {e}")
             await asyncio.sleep(0.1)
 
+def start_pigpio_daemon():
+    """Запуск pigpio демона"""
+    try:
+        # Проверяем, запущен ли уже демон
+        result = subprocess.run(['pgrep', 'pigpiod'], capture_output=True, text=True)
+        if result.returncode == 0:
+            logger.info("pigpio демон уже запущен")
+            return True
+            
+        # Запускаем демон
+        logger.info("Запуск pigpio демона...")
+        result = subprocess.run(['sudo', 'pigpiod'], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logger.info("pigpio демон успешно запущен")
+            # Даем демону время на запуск
+            time.sleep(2)
+            return True
+        else:
+            logger.error(f"Ошибка запуска pigpio демона: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Ошибка при запуске pigpio демона: {e}")
+        return False
+
 # ============================================================================
 # ОСНОВНАЯ ФУНКЦИЯ
 # ============================================================================
@@ -666,6 +693,11 @@ async def main():
     logger.info("=== Raspberry Pi 3 Encoder + Modbus Server + RS-485 ===")
     logger.info("Режим работы: симплексный (постоянная передача)")
     
+    # Запускаем pigpio демон
+    if not start_pigpio_daemon():
+        logger.error("Не удалось запустить pigpio демон. Запустите вручную: sudo pigpiod")
+        return
+    
     # Устанавливаем высокий приоритет процессу
     try:
         os.nice(-20)  # Максимальный приоритет
@@ -675,7 +707,8 @@ async def main():
     # Инициализация pigpio
     pi_instance = pigpio.pi()
     if not pi_instance.connected:
-        logger.error("pigpio daemon не запущен")
+        logger.error("Не удалось подключиться к pigpio daemon")
+        logger.error("Попробуйте запустить вручную: sudo pigpiod")
         return
     
     try:
