@@ -151,7 +151,13 @@ SP_ANGLE_OFFSET = 2012  # FLOAT (2 registers)
 # Константы для RS-485 пакета
 PACKET_SIZE = 120
 ANGLE_BYTE_START = 55  # Байты 56-59 (индекс 55-58)
-STATUS_BYTE = 116      # Байт 117 (индекс 116)
+STATUS_BYTE_START = 80 # Байты 81-82 (индекс 80-81)
+CHECKSUM_BYTE = 117    # Байт 117 (индекс 117)
+
+# Постоянные байты пакета
+HEADER_BYTE_0 = 0x65   # Байт 0
+HEADER_BYTE_118 = 0x45 # Байт 118
+HEADER_BYTE_119 = 0xCF # Байт 119
 
 # Глобальные переменные
 counter = 0
@@ -330,12 +336,18 @@ class RS485Transmitter:
         
         # Создаем пакет согласно спецификации (120 байт)
         self.packet = bytearray(PACKET_SIZE)
+        
+        # Устанавливаем постоянные байты
+        self.packet[0] = HEADER_BYTE_0      # Байт 0
+        self.packet[118] = HEADER_BYTE_118  # Байт 118
+        self.packet[119] = HEADER_BYTE_119  # Байт 119
+        
         # Байты 1-55: нули (уже инициализированы)
         # Байты 56-59: угол (будет заполняться)
         # Байты 60-80: нули (уже инициализированы)
         # Байты 81-82: статусное слово (будет заполняться)
         # Байты 83-116: нули (уже инициализированы)
-        # Байты 117-120: контрольная сумма и заголовок (будет заполняться)
+        # Байт 117: контрольная сумма (будет вычисляться)
         
     def start(self):
         """Запуск RS-485 передатчика"""
@@ -388,6 +400,20 @@ class RS485Transmitter:
         angle_rad = angle_deg * math.pi / 180.0
         return angle_rad
     
+    def calculate_checksum(self) -> int:
+        """
+        Вычисление контрольной суммы по формуле:
+        CS = 0xFF - (0xFF & Σᵢ СДᵢ)
+        где СДᵢ - слова сообщения (байты 0-116)
+        """
+        # Суммируем все байты от 0 до 116 включительно
+        byte_sum = sum(self.packet[0:117])
+        
+        # Применяем формулу: CS = 0xFF - (0xFF & сумма_байтов)
+        checksum = 0xFF - (0xFF & byte_sum)
+        
+        return checksum
+    
     def send_packet(self, angle_encoder: float, status_word: int = 0, angle_offset: float = 0.0):
         """Отправка пакета по RS-485"""
         if not self.running or not self.serial_port:
@@ -403,7 +429,11 @@ class RS485Transmitter:
             
             # Заполняем байты 81-82 (индекс 80-81) - статусное слово
             status_bytes = struct.pack('<H', status_word)
-            self.packet[80:82] = status_bytes
+            self.packet[STATUS_BYTE_START:STATUS_BYTE_START+2] = status_bytes
+            
+            # Вычисляем и устанавливаем контрольную сумму в байт 117
+            checksum = self.calculate_checksum()
+            self.packet[CHECKSUM_BYTE] = checksum
             
             # Включаем передачу
             self.pi.write(self.rs485_de_pin, 1)
