@@ -592,7 +592,7 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             
             # Пауза 130мкс между пакетами
             start_time = time.perf_counter()
-            while time.perf_counter() - start_time < 0.004:  # 130мкс
+            while time.perf_counter() - start_time < 0.003:  # 130мкс
                 pass
             
         except Exception as e:
