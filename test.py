@@ -478,7 +478,6 @@ class RS485Transmitter:
         try:
             # ПРОСТО ОТПРАВЛЯЕМ ДАННЫЕ - НЕТ ПЕРЕКЛЮЧЕНИЯ НАПРАВЛЕНИЯ!
             self.serial_port.write(self.packet)
-            time.sleep(0.00025)
             return True
             
         except Exception as e:
@@ -579,8 +578,8 @@ async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Отправляем пакет ВСЕГДА (симплексный режим)
             rs485_transmitter.send_packet()
             
-            # Пауза 130мкс между пакетами
-            await asyncio.sleep(0.00013)
+            # Пауза 130мкс между пакетами (временно увеличена для тестирования)
+            await asyncio.sleep(0.001)  # 1мс для тестирования
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
