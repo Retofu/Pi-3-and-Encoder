@@ -5,23 +5,95 @@ Raspberry Pi 3 Encoder + Modbus Server + RS-485 Transmitter
 Плата работает как Modbus сервер, клиент подключается для настройки параметров
 """
 
-import pigpio
-import math
-import time
-import struct
-import serial
-import os
 import asyncio
 import logging
+import math
+import os
+import struct
 import threading
 from typing import Optional, Dict, Any
 
+import pigpio
+import serial
 from pymodbus.server import StartTcpServer
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
 
 class Endian:
+    """Константы для порядка байтов"""
     Big = 0
     Little = 1
+
+# Настройки пинов GPIO
+class GpioPins:
+    """Константы для GPIO пинов"""
+    ENCODER_A = 17
+    ENCODER_B = 22
+    ENCODER_Z = 27
+    RS485_DE = 24
+    POWER_27V = 25
+
+# Настройки UART
+class UartConfig:
+    """Конфигурация UART"""
+    DEVICE = '/dev/serial0'
+    BAUDRATE = 507000
+
+# Настройки Modbus сервера
+class ModbusConfig:
+    """Конфигурация Modbus сервера"""
+    SERVER_PORT = 2502
+    UNIT_ID = 1
+
+# Константы для RS-485 пакета
+class Rs485Config:
+    """Конфигурация RS-485 пакета"""
+    PACKET_SIZE = 120
+    ANGLE_BYTE_START = 55  # Байты 56-59 (индекс 55-58)
+    STATUS_BYTE_START = 80 # Байты 81-82 (индекс 80-81)
+    CHECKSUM_BYTE = 117    # Байт 117 (индекс 117)
+    
+    # Постоянные байты пакета
+    HEADER_BYTE_0 = 0x65   # Байт 0
+    HEADER_BYTE_118 = 0x45 # Байт 118
+    HEADER_BYTE_119 = 0xCF # Байт 119
+
+# Адреса Modbus регистров
+class ModbusRegisters:
+    """Адреса Modbus регистров"""
+    # Feedback registers (1000-1019)
+    FBK_DELAY_BEFORE = 1000
+    FBK_DELAY_COUNT = 1001
+    FBK_POS_COUNT = 1002
+    FBK_POS_COUNT_MAX = 1003
+    FBK_POS = 1004
+    FBK_PULSE_LENGTH = 1005
+    FBK_PULSE_COUNT = 1006
+    FBK_FRONT_TYPE = 1007
+    FBK_PULSE_ON = 1008
+    FBK_POWER_27_V = 1009
+    FBK_POS_SET = 1010
+    FBK_RESERVE_11 = 1011
+    FBK_ANGLE_ROLL = 1012  # FLOAT (2 registers)
+    FBK_ANGLE_ADJ = 1014   # FLOAT (2 registers)
+    FBK_RESERVE_16 = 1016
+    FBK_RESERVE_17 = 1017
+    FBK_RESERVE_18 = 1018
+    FBK_RESERVE_19 = 1019
+
+    # Setpoint registers (2000-2013)
+    SP_DELAY_BEFORE = 2000
+    SP_RESERVE_1 = 2001
+    SP_POS_COUNT = 2002
+    SP_POS_COUNT_MAX = 2003
+    SP_RESERVE_4 = 2004
+    SP_PULSE_LENGTH = 2005
+    SP_RESERVE_6 = 2006
+    SP_FRONT_TYPE = 2007
+    SP_PULSE_ON = 2008
+    SP_POWER_27_V = 2009
+    SP_POS_SET = 2010
+    SP_STATUS = 2011
+    SP_ANGLE_OFFSET = 2012  # FLOAT (2 registers)
 
 class BinaryPayloadBuilder:
     def __init__(self, byteorder=0, wordorder=0):
@@ -95,77 +167,24 @@ class BinaryPayloadDecoder:
         """Сброс указателя в начало"""
         self.pointer = 0
 
-# Настройка пинов энкодера
-A_PIN = 17
-B_PIN = 22
-Z_PIN = 27
-
-# Настройка пинов RS-485 и управления питанием
-RS485_DE_PIN = 24
-POWER_27V_PIN = 25  # GPIO25 для управления питанием 27В
-
-# Настройки UART
-UART_DEVICE = '/dev/serial0'
-UART_BAUDRATE = 507000
-
-# Настройки Modbus сервера
-MODBUS_SERVER_PORT = 2502
-MODBUS_UNIT_ID = 1
-
-# Адреса регистров согласно таблице
-# Feedback registers (1000-1019)
-FBK_DELAY_BEFORE = 1000
-FBK_DELAY_COUNT = 1001
-FBK_POS_COUNT = 1002
-FBK_POS_COUNT_MAX = 1003
-FBK_POS = 1004
-FBK_PULSE_LENGTH = 1005
-FBK_PULSE_COUNT = 1006
-FBK_FRONT_TYPE = 1007
-FBK_PULSE_ON = 1008
-FBK_POWER_27_V = 1009
-FBK_POS_SET = 1010
-FBK_RESERVE_11 = 1011
-FBK_ANGLE_ROLL = 1012  # FLOAT (2 registers)
-FBK_ANGLE_ADJ = 1014   # FLOAT (2 registers)
-FBK_RESERVE_16 = 1016
-FBK_RESERVE_17 = 1017
-FBK_RESERVE_18 = 1018
-FBK_RESERVE_19 = 1019
-
-# Setpoint registers (2000-2013)
-SP_DELAY_BEFORE = 2000
-SP_RESERVE_1 = 2001
-SP_POS_COUNT = 2002
-SP_POS_COUNT_MAX = 2003
-SP_RESERVE_4 = 2004
-SP_PULSE_LENGTH = 2005
-SP_RESERVE_6 = 2006
-SP_FRONT_TYPE = 2007
-SP_PULSE_ON = 2008
-SP_POWER_27_V = 2009
-SP_POS_SET = 2010
-SP_STATUS = 2011
-SP_ANGLE_OFFSET = 2012  # FLOAT (2 registers)
-
-# Константы для RS-485 пакета
-PACKET_SIZE = 120
-ANGLE_BYTE_START = 55  # Байты 56-59 (индекс 55-58)
-STATUS_BYTE_START = 80 # Байты 81-82 (индекс 80-81)
-CHECKSUM_BYTE = 117    # Байт 117 (индекс 117)
-
-# Постоянные байты пакета
-HEADER_BYTE_0 = 0x65   # Байт 0
-HEADER_BYTE_118 = 0x45 # Байт 118
-HEADER_BYTE_119 = 0xCF # Байт 119
+# ============================================================================
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И НАСТРОЙКИ
+# ============================================================================
 
 # Глобальные переменные
 counter = 0
 power_27v_enabled = False  # Состояние питания 27В
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# КЛАССЫ ДЛЯ РАБОТЫ С MODBUS
+# ============================================================================
 
 class ModbusDataStore:
     """Класс для управления данными Modbus сервера"""
@@ -179,20 +198,20 @@ class ModbusDataStore:
         """Обновление данных энкодера в регистрах обратной связи"""
         try:
             # Обновляем счетчик импульсов
-            self.hr_block.setValues(FBK_POS_COUNT, [counter])
-            self.ir_block.setValues(FBK_POS_COUNT, [counter])
+            self.hr_block.setValues(ModbusRegisters.FBK_POS_COUNT, [counter])
+            self.ir_block.setValues(ModbusRegisters.FBK_POS_COUNT, [counter])
             
             # Обновляем угол в градусах
-            self.hr_block.setValues(FBK_POS, [int(angle_deg)])
-            self.ir_block.setValues(FBK_POS, [int(angle_deg)])
+            self.hr_block.setValues(ModbusRegisters.FBK_POS, [int(angle_deg)])
+            self.ir_block.setValues(ModbusRegisters.FBK_POS, [int(angle_deg)])
             
             # Обновляем угол в радианах (FLOAT, 2 регистра)
             builder = BinaryPayloadBuilder(byteorder=Endian.Big, wordorder=Endian.Big)
             builder.add_32bit_float(angle_rad)
             angle_rad_data = builder.to_registers()
-            
-            self.hr_block.setValues(FBK_ANGLE_ROLL, angle_rad_data)
-            self.ir_block.setValues(FBK_ANGLE_ROLL, angle_rad_data)
+        
+            self.hr_block.setValues(ModbusRegisters.FBK_ANGLE_ROLL, angle_rad_data)
+            self.ir_block.setValues(ModbusRegisters.FBK_ANGLE_ROLL, angle_rad_data)
             
         except Exception as e:
             logger.error(f"Ошибка обновления данных энкодера: {e}")
@@ -200,10 +219,10 @@ class ModbusDataStore:
     def get_setpoint_variable(self, register: int) -> Any:
         """Получение переменной задания из регистра"""
         try:
-            if register == SP_ANGLE_OFFSET:
+            if register == ModbusRegisters.SP_ANGLE_OFFSET:
                 # FLOAT регистр (2 слова)
-                reg1 = self.hr_block.getValues(SP_ANGLE_OFFSET, 1)[0]
-                reg2 = self.hr_block.getValues(SP_ANGLE_OFFSET + 1, 1)[0]
+                reg1 = self.hr_block.getValues(ModbusRegisters.SP_ANGLE_OFFSET, 1)[0]
+                reg2 = self.hr_block.getValues(ModbusRegisters.SP_ANGLE_OFFSET + 1, 1)[0]
                 decoder = BinaryPayloadDecoder([reg1, reg2], byteorder=Endian.Big, wordorder=Endian.Big)
                 return decoder.decode_32bit_float()
             else:
@@ -215,19 +234,23 @@ class ModbusDataStore:
     
     def get_power_27v_command(self) -> bool:
         """Получение команды питания 27В"""
-        return self.get_setpoint_variable(SP_POWER_27_V) == 1
+        return self.get_setpoint_variable(ModbusRegisters.SP_POWER_27_V) == 1
     
     def get_angle_offset(self) -> float:
         """Получение смещения угла"""
-        return self.get_setpoint_variable(SP_ANGLE_OFFSET)
+        return self.get_setpoint_variable(ModbusRegisters.SP_ANGLE_OFFSET)
     
     def get_status_word(self) -> int:
         """Получение статусного слова"""
-        return self.get_setpoint_variable(SP_STATUS)
+        return self.get_setpoint_variable(ModbusRegisters.SP_STATUS)
     
     def get_pos_count_max(self) -> int:
         """Получение максимального количества импульсов на оборот"""
-        return self.get_setpoint_variable(SP_POS_COUNT_MAX)
+        return self.get_setpoint_variable(ModbusRegisters.SP_POS_COUNT_MAX)
+
+# ============================================================================
+# КЛАССЫ ДЛЯ УПРАВЛЕНИЯ ОБОРУДОВАНИЕМ
+# ============================================================================
 
 class PowerController:
     """Класс для управления питанием 27В через GPIO25"""
@@ -265,12 +288,12 @@ class EncoderReader:
         self.cb_a = None
         self.cb_z = None
         self.running = False
-        
+
     def start(self):
         """Запуск чтения энкодера"""
         if not self.pi.connected:
             raise RuntimeError("pigpio daemon is not running")
-        
+
         # Настройка пинов
         self.pi.set_mode(self.a_pin, pigpio.INPUT)
         self.pi.set_pull_up_down(self.a_pin, pigpio.PUD_UP)
@@ -283,14 +306,14 @@ class EncoderReader:
         self.pi.set_glitch_filter(self.a_pin, 50)
         self.pi.set_glitch_filter(self.b_pin, 50)
         self.pi.set_glitch_filter(self.z_pin, 50)
-        
+
         # Обработчики прерываний
         self.cb_a = self.pi.callback(self.a_pin, pigpio.EITHER_EDGE, self._handle_A)
         self.cb_z = self.pi.callback(self.z_pin, pigpio.RISING_EDGE, self._handle_Z)
-        
+
         self.running = True
         logger.info("Энкодер запущен")
-        
+
     def stop(self):
         """Остановка чтения энкодера"""
         self.running = False
@@ -299,29 +322,33 @@ class EncoderReader:
         if self.cb_z:
             self.cb_z.cancel()
         logger.info("Энкодер остановлен")
-        
+
     def _handle_A(self, gpio, level, tick):
         """Обработчик фазы A"""
         global counter
         if level == pigpio.TIMEOUT or not self.running:
             return
-        
+
         try:
             a = self.pi.read(self.a_pin)
             b = self.pi.read(self.b_pin)
-            
+
             if level == 1:
                 counter += 1 if b == 0 else -1
             else:
                 counter += 1 if b == 1 else -1
         except:
             pass
-            
+
     def _handle_Z(self, gpio, level, tick):
         """Обработчик индекса Z"""
         global counter
         if level == 1 and self.running:
             counter = 0
+
+# ============================================================================
+# КЛАССЫ ДЛЯ ПЕРЕДАЧИ ДАННЫХ
+# ============================================================================
 
 class RS485Transmitter:
     """Класс для передачи данных по RS-485"""
@@ -335,12 +362,12 @@ class RS485Transmitter:
         self.running = False
         
         # Создаем пакет согласно спецификации (120 байт)
-        self.packet = bytearray(PACKET_SIZE)
+        self.packet = bytearray(Rs485Config.PACKET_SIZE)
         
         # Устанавливаем постоянные байты
-        self.packet[0] = HEADER_BYTE_0      # Байт 0
-        self.packet[118] = HEADER_BYTE_118  # Байт 118
-        self.packet[119] = HEADER_BYTE_119  # Байт 119
+        self.packet[0] = Rs485Config.HEADER_BYTE_0      # Байт 0
+        self.packet[118] = Rs485Config.HEADER_BYTE_118  # Байт 118
+        self.packet[119] = Rs485Config.HEADER_BYTE_119  # Байт 119
         
         # Байты 1-55: нули (уже инициализированы)
         # Байты 56-59: угол (будет заполняться)
@@ -348,13 +375,13 @@ class RS485Transmitter:
         # Байты 81-82: статусное слово (будет заполняться)
         # Байты 83-116: нули (уже инициализированы)
         # Байт 117: контрольная сумма (будет вычисляться)
-        
+
     def start(self):
         """Запуск RS-485 передатчика"""
         try:
             if not self.pi.connected:
                 raise RuntimeError("pigpio daemon is not running")
-            
+
             # Настройка пина DE для RS-485
             self.pi.set_mode(self.rs485_de_pin, pigpio.OUTPUT)
             self.pi.write(self.rs485_de_pin, 0)
@@ -369,17 +396,17 @@ class RS485Transmitter:
                 timeout=0.001,
                 write_timeout=0.001
             )
-            
+
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
             
             self.running = True
             logger.info(f"RS-485 передатчик запущен на {self.device}")
-            
+
         except Exception as e:
             logger.error(f"Ошибка запуска RS-485: {e}")
             raise
-    
+
     def stop(self):
         """Остановка RS-485 передатчика"""
         self.running = False
@@ -418,32 +445,32 @@ class RS485Transmitter:
         """Отправка пакета по RS-485"""
         if not self.running or not self.serial_port:
             return False
-        
+
         try:
             # Вычисляем угол крена
             angle_roll = self.calculate_angle_roll(angle_encoder, angle_offset)
             
             # Заполняем байты 56-59 (индекс 55-58) - угол в радианах (float, little-endian)
             angle_bytes = struct.pack('<f', angle_roll)
-            self.packet[ANGLE_BYTE_START:ANGLE_BYTE_START+4] = angle_bytes
+            self.packet[Rs485Config.ANGLE_BYTE_START:Rs485Config.ANGLE_BYTE_START+4] = angle_bytes
             
             # Заполняем байты 81-82 (индекс 80-81) - статусное слово
             status_bytes = struct.pack('<H', status_word)
-            self.packet[STATUS_BYTE_START:STATUS_BYTE_START+2] = status_bytes
+            self.packet[Rs485Config.STATUS_BYTE_START:Rs485Config.STATUS_BYTE_START+2] = status_bytes
             
             # Вычисляем и устанавливаем контрольную сумму в байт 117
             checksum = self.calculate_checksum()
-            self.packet[CHECKSUM_BYTE] = checksum
+            self.packet[Rs485Config.CHECKSUM_BYTE] = checksum
             
             # Включаем передачу
             self.pi.write(self.rs485_de_pin, 1)
-            
+
             # Отправляем пакет
             self.serial_port.write(self.packet)
             
             # Выключаем передачу
             self.pi.write(self.rs485_de_pin, 0)
-            
+
             return True
             
         except Exception as e:
@@ -454,6 +481,10 @@ class RS485Transmitter:
             except:
                 pass
             return False
+
+# ============================================================================
+# ФУНКЦИИ MODBUS СЕРВЕРА
+# ============================================================================
 
 def run_modbus_server(data_store: ModbusDataStore) -> threading.Thread:
     """Запуск Modbus TCP сервера"""
@@ -468,13 +499,13 @@ def run_modbus_server(data_store: ModbusDataStore) -> threading.Thread:
             )
             
             # Создаем контекст сервера
-            server_context = ModbusServerContext(devices={MODBUS_UNIT_ID: device_context}, single=False)
+            server_context = ModbusServerContext(devices={ModbusConfig.UNIT_ID: device_context}, single=False)
             
-            logger.info(f"Запуск Modbus TCP сервера на порту {MODBUS_SERVER_PORT}")
-            logger.info(f"Unit ID: {MODBUS_UNIT_ID}")
+            logger.info(f"Запуск Modbus TCP сервера на порту {ModbusConfig.SERVER_PORT}")
+            logger.info(f"Unit ID: {ModbusConfig.UNIT_ID}")
             
             # Запускаем сервер
-            StartTcpServer(server_context, address=("0.0.0.0", MODBUS_SERVER_PORT))
+            StartTcpServer(server_context, address=("0.0.0.0", ModbusConfig.SERVER_PORT))
             
         except Exception as e:
             logger.error(f"Ошибка запуска Modbus сервера: {e}")
@@ -482,6 +513,10 @@ def run_modbus_server(data_store: ModbusDataStore) -> threading.Thread:
     server_thread_obj = threading.Thread(target=server_thread, daemon=True)
     server_thread_obj.start()
     return server_thread_obj
+
+# ============================================================================
+# АСИНХРОННЫЕ ЗАДАЧИ
+# ============================================================================
 
 async def power_control_task(power_controller: PowerController, data_store: ModbusDataStore):
     """Задача управления питанием 27В"""
@@ -552,6 +587,10 @@ async def encoder_update_task(encoder: EncoderReader, data_store: ModbusDataStor
             logger.error(f"Ошибка в задаче обновления энкодера: {e}")
             await asyncio.sleep(0.1)
 
+# ============================================================================
+# ОСНОВНАЯ ФУНКЦИЯ
+# ============================================================================
+
 async def main():
     """Основная асинхронная функция"""
     global counter
@@ -563,7 +602,7 @@ async def main():
         os.nice(-20)  # Максимальный приоритет
     except:
         pass
-    
+
     # Инициализация pigpio
     pi_instance = pigpio.pi()
     if not pi_instance.connected:
@@ -578,17 +617,17 @@ async def main():
         
         # Создаем хранилище данных
         data_store = ModbusDataStore(hr_block, ir_block)
-        
-        # Инициализация энкодера
-        encoder = EncoderReader(pi_instance, A_PIN, B_PIN, Z_PIN)
+    
+    # Инициализация энкодера
+        encoder = EncoderReader(pi_instance, GpioPins.ENCODER_A, GpioPins.ENCODER_B, GpioPins.ENCODER_Z)
         encoder.start()
         
         # Инициализация контроллера питания
-        power_controller = PowerController(pi_instance, POWER_27V_PIN)
+        power_controller = PowerController(pi_instance, GpioPins.POWER_27V)
         power_controller.setup()
         
         # Инициализация RS-485 передатчика
-        rs485_transmitter = RS485Transmitter(pi_instance, UART_DEVICE, UART_BAUDRATE, RS485_DE_PIN)
+        rs485_transmitter = RS485Transmitter(pi_instance, UartConfig.DEVICE, UartConfig.BAUDRATE, GpioPins.RS485_DE)
         rs485_transmitter.start()
         
         # Запуск Modbus сервера
@@ -606,7 +645,7 @@ async def main():
         
         # Ждем завершения задач
         await asyncio.gather(*tasks)
-        
+            
     except KeyboardInterrupt:
         logger.info("Получен сигнал остановки...")
     except Exception as e:
@@ -621,6 +660,10 @@ async def main():
         except:
             pass
         logger.info("Программа завершена")
+
+# ============================================================================
+# ТОЧКА ВХОДА
+# ============================================================================
 
 if __name__ == "__main__":
     asyncio.run(main())
