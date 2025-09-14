@@ -590,8 +590,10 @@ def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             # Отправляем пакет ВСЕГДА (симплексный режим)
             rs485_transmitter.send_packet()
             
-            # Пауза между пакетами
-            time.sleep(0.0002)  # 200мкс
+            # Пауза 130мкс между пакетами
+            start_time = time.perf_counter()
+            while time.perf_counter() - start_time < 0.00013:  # 130мкс
+                pass
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
