@@ -444,10 +444,8 @@ class RS485Transmitter:
         return self.change_tracker.update(ppr, angle_offset, status_word)
     
     def prepare_packet(self, angle_encoder_deg: float) -> bool:
-        """Подготовка пакета только если данные изменились"""
-        if not self.change_tracker.is_dirty() and not self.need_update:
-            return False  # Данные не изменились, обновление не требуется
-        
+        """Подготовка пакета - всегда обновляем угол энкодера"""
+        # В симплексном режиме всегда обновляем угол энкодера
         # Вычисляем угол крена
         angle_roll = self.calculate_angle_roll(
             angle_encoder_deg, 
@@ -458,16 +456,16 @@ class RS485Transmitter:
         angle_bytes = struct.pack('<f', angle_roll)
         self.packet[Rs485Config.ANGLE_BYTE_START:Rs485Config.ANGLE_BYTE_START+4] = angle_bytes
         
-        # Заполняем байты 81-82 - статусное слово
-        status_bytes = struct.pack('<H', self.change_tracker.last_status_word)
-        self.packet[Rs485Config.STATUS_BYTE_START:Rs485Config.STATUS_BYTE_START+2] = status_bytes
+        # Обновляем статусное слово только если параметры изменились
+        if self.change_tracker.is_dirty():
+            # Заполняем байты 81-82 - статусное слово
+            status_bytes = struct.pack('<H', self.change_tracker.last_status_word)
+            self.packet[Rs485Config.STATUS_BYTE_START:Rs485Config.STATUS_BYTE_START+2] = status_bytes
+            self.change_tracker.mark_clean()
         
         # Вычисляем и устанавливаем контрольную сумму
         checksum = self.calculate_checksum()
         self.packet[Rs485Config.CHECKSUM_BYTE] = checksum
-        
-        self.change_tracker.mark_clean()
-        self.need_update = False
         
         return True
     
@@ -563,10 +561,6 @@ async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
     """Задача передачи данных по RS-485 в симплексном режиме"""
     global counter
     
-    # Переменные для оптимизации вычислений
-    last_counter = -1
-    last_angle_deg = -1.0
-    
     while True:
         try:
             # Получаем текущий PPR из трекера
@@ -574,21 +568,17 @@ async def rs485_transmission_task(rs485_transmitter: RS485Transmitter):
             if ppr == 0:
                 ppr = 360
                 
-            # Вычисляем угол энкодера только если счетчик изменился
-            if counter != last_counter:
-                angle_encoder_deg = (counter % ppr) * (360.0 / ppr)
-                last_counter = counter
-                last_angle_deg = angle_encoder_deg
-            else:
-                angle_encoder_deg = last_angle_deg
+            # Вычисляем угол энкодера в каждом цикле (для симплексного режима)
+            angle_encoder_deg = (counter % ppr) * (360.0 / ppr)
             
-            # Подготавливаем пакет (только если данные изменились)
-            packet_prepared = rs485_transmitter.prepare_packet(angle_encoder_deg)
+            # Подготавливаем пакет (всегда обновляем угол)
+            rs485_transmitter.prepare_packet(angle_encoder_deg)
             
             # Отправляем пакет ВСЕГДА (симплексный режим)
             rs485_transmitter.send_packet()
             
-            await asyncio.sleep(0.003)  # Сохраняем периодичность 3мс
+            # Пауза 130мкс между пакетами
+            await asyncio.sleep(0.00013)
             
         except Exception as e:
             logger.error(f"Ошибка в задаче RS-485: {e}")
