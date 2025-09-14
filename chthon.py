@@ -109,8 +109,8 @@ UART_DEVICE = '/dev/serial0'
 UART_BAUDRATE = 507000
 
 # Настройки Modbus сервера
-MODBUS_SERVER_PORT = 502
-MODBUS_UNIT_ID = 255
+MODBUS_SERVER_PORT = 2502
+MODBUS_UNIT_ID = 1
 
 # Адреса регистров согласно таблице
 # Feedback registers (1000-1019)
