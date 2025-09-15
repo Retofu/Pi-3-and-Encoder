@@ -17,7 +17,7 @@ MODBUS_PORT = 2502  # Стандартный порт Modbus TCP
 MODBUS_UNIT_ID = 1
 
 # Адрес регистра для команды 06
-REGISTER_ADDRESS = 2009
+REGISTER_ADDRESS = 2006
 
 class GPIOController:
     """Класс для управления GPIO пином"""
