@@ -27,8 +27,16 @@ UART_BAUDRATE = 507000
 counter = 0
 angle_rad = 0.0
 
+# Смещение угла энкодера (в градусах)
+OFFSET_ANGLE_ROLL = 0.0
+
 # Предварительно вычисленные константы
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
+PI_OVER_180 = math.pi / 180
+
+def mod360(angle_degrees):
+    """Функция Mod360 - нормализация угла в диапазоне 0-360 градусов"""
+    return (angle_degrees % 360 + 360) % 360
 
 class EncoderReader:
     def __init__(self, pigpio, a_pin, b_pin, z_pin):
@@ -149,11 +157,14 @@ class RS485Transmitter:
             return False
 
         try:
-
-            # Вычисляем точный угол на основе счетчика
-            angle = counter_value * ANGLE_MULTIPLIER
-            #angle_bytes = struct.pack('<f', angle)
-            self._packet[55:59] = struct.pack('<f', angle)
+            # Вычисляем угол энкодера в градусах
+            angle_encoder_degrees = counter_value * 360.0 / PPR
+            
+            # Применяем формулу: Angle_roll = (Mod360(Offset_angle_roll + angle_encoder)) * π/180
+            angle_roll_radians = mod360(OFFSET_ANGLE_ROLL + angle_encoder_degrees) * PI_OVER_180
+            
+            # Упаковываем угол в байты 56-59 (индексы 55-58)
+            self._packet[55:59] = struct.pack('<f', angle_roll_radians)
 
             # Контрольная сумма
             checksum = sum(self._packet[55:59], 0x65)
