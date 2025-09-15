@@ -33,6 +33,9 @@ OFFSET_ANGLE_ROLL = 0.0
 # Статусное слово (uint, байты 81-82)
 SP_Status = 0
 
+# Угол юстировки (float, байты 89-92)
+Angle_adj = 0.0
+
 # Предварительно вычисленные константы
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 PI_OVER_180 = math.pi / 180
@@ -171,9 +174,14 @@ class RS485Transmitter:
             
             # Упаковываем статусное слово в байты 81-82 (индексы 80-81)
             self._packet[80:82] = struct.pack('<H', SP_Status)
+            
+            # Упаковываем угол юстировки в байты 89-92 (индексы 88-91)
+            self._packet[88:92] = struct.pack('<f', Angle_adj)
 
-            # Контрольная сумма
-            checksum = sum(self._packet[55:59], 0x65)
+            # Контрольная сумма (суммируем все значимые байты)
+            checksum = 0x65  # Заголовок (байт 0)
+            checksum += sum(self._packet[55:59])  # Байты 56-59 (угол)
+            checksum += sum(self._packet[80:92])  # Байты 81-92 (статус + угол юстировки)
             self._packet[117] = 0xFF - (0xFF & checksum)
 
             # Отправляем пакет
