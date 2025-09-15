@@ -30,6 +30,9 @@ angle_rad = 0.0
 # Смещение угла энкодера (в градусах)
 OFFSET_ANGLE_ROLL = 0.0
 
+# Статусное слово (uint, байты 81-82)
+SP_Status = 0
+
 # Предварительно вычисленные константы
 ANGLE_MULTIPLIER = 2 * math.pi / PPR
 PI_OVER_180 = math.pi / 180
@@ -165,6 +168,9 @@ class RS485Transmitter:
             
             # Упаковываем угол в байты 56-59 (индексы 55-58)
             self._packet[55:59] = struct.pack('<f', angle_roll_radians)
+            
+            # Упаковываем статусное слово в байты 81-82 (индексы 80-81)
+            self._packet[80:82] = struct.pack('<H', SP_Status)
 
             # Контрольная сумма
             checksum = sum(self._packet[55:59], 0x65)
